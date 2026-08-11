@@ -23,35 +23,41 @@ import {
   type SupportedResource,
   type VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
-import type { ToolCatalog } from "@gadgets/mcp-shared/client";
 import {
-  classifyTool,
-  type ServerTrust,
-} from "@gadgets/mcp-shared/tools";
-import { bindingNameFragment, hostOf } from "@gadgets/mcp-shared/util";
+  isValidToolName,
+  type ToolCatalog,
+  type ToolIndex,
+} from "@gadgets/mcp-shared/client";
+import type { ServerTrust } from "@gadgets/mcp-shared/tools";
+import { bindingNameFragment, hexEncode, hostOf } from "@gadgets/mcp-shared/util";
 import type { McpLog, McpLogFields } from "@gadgets/mcp-shared/log";
 import { generateSessionTypes, sessionTypeName } from "@gadgets/mcp-shared/schema-to-ts";
 import { McpAccountBase, type ConnectedServer, type ConnectOutcome }
   from "@gadgets/mcp-shared/account";
 import { generateNonce } from "@gadgets/mcp-shared/connect-nonce";
-import { fetchTools, withClient, type ConnectionAccount } from "@gadgets/mcp-shared/connection";
+import {
+  fetchToolIndex,
+  fetchTools,
+  withClient,
+  type ConnectionAccount,
+  type McpConnection,
+} from "@gadgets/mcp-shared/connection";
 import { McpSessionBase } from "@gadgets/mcp-shared/session";
 import { McpFacetBase } from "@gadgets/mcp-shared/facet";
 import {
   groupToolsByServer,
   looksLikePortal,
   parsePortalServers,
-  reconcilePortalServers,
   PORTAL_LIST_SERVERS_TOOL,
+  reconcilePortalServers,
+  toolBelongsToServer,
   type PortalServer,
 } from "@gadgets/mcp-shared/portal";
 import {
   endpointOfResourceUrl,
   endpointTag,
   parseToolScope,
-  requireCompleteCatalogForToolSelection,
   sameEndpoint,
-  scopeAllows,
   validateToolScopeAgainstCatalog,
   type ToolScope,
 } from "@gadgets/mcp-shared/scope";
@@ -75,6 +81,8 @@ import {
   portalTrust,
   readPortalConfig,
   requirePortalServerScope,
+  toolGrantOptions,
+  type PortalConfig,
 } from "./config.js";
 import type { ConfiguratorUIOption } from "@gadgets/configurator-ui";
 import { MCP_BASE_TYPES } from "@gadgets/mcp-shared/base-types";
@@ -83,6 +91,14 @@ import MCP_SERVER_CONFIGURATOR_HTML from "./generated/server-configurator-ui.txt
 import type { McpServerConfiguratorRpc } from "./configurator/server-configurator-types";
 
 const VENDOR_ID = "mcp_portal";
+
+// How many tools one survey of the portal may cover.
+//
+// An index entry is a name plus at most four booleans, so it runs about 120 bytes against the 96 KiB
+// listing budget -- roughly 800 entries, which is the bound that actually binds. This count cap sits
+// above it so that a portal fronting an implausible number of tools still terminates in bounded work
+// rather than depending on the byte budget to stop it, and either cut is reported as `truncated`.
+const MAX_PORTAL_TOOL_INDEX = 1000;
 
 const logger = createLogger<McpLogFields>({
   component: "gatekeeper.mcp-portal", vendorId: VENDOR_ID,
@@ -103,22 +119,31 @@ function getBaseUrl(env: Env): string {
   return stripTrailingSlashes(env.BASE_URL ?? "http://localhost:8787/gatekeeper/mcp-portal");
 }
 
-async function fetchPortalServers(
+async function listPortalServers(
   env: Env,
   account: DurableObjectStub<McpAccount>,
   endpoint: string,
 ): Promise<PortalServer[]> {
+  const result = await withClient(env, account, endpoint,
+    client => client.callTool(PORTAL_LIST_SERVERS_TOOL, {}));
+  if (result.isError) throw new Error("The portal could not list its upstream servers.");
+  return parsePortalServers(result);
+}
+
+async function tryListPortalServers(
+  env: Env,
+  account: DurableObjectStub<McpAccount>,
+  endpoint: string,
+): Promise<PortalServer[] | null> {
   try {
-    const result = await withClient(env, account, endpoint,
-      client => client.callTool(PORTAL_LIST_SERVERS_TOOL, {}));
-    return parsePortalServers(result);
+    return await listPortalServers(env, account, endpoint);
   } catch (err) {
     logger.warn("could not list portal servers", {
       event: "portal.servers.list.failed",
       serverHost: hostOf(endpoint),
       error: err,
     });
-    return [];
+    return null;
   }
 }
 
@@ -240,6 +265,42 @@ export class McpAccount extends McpAccountBase<Env> {
   protected override staticToken(server: ConnectedServer): string | null {
     return portalTokenFor(this.env, server.endpoint);
   }
+
+  protected override allowsOAuthFallback(server: ConnectedServer): boolean {
+    return server.auth !== "none";
+  }
+
+  protected override allowsOAuthCallback(server: ConnectedServer): boolean {
+    const config = readPortalConfig(this.env);
+    return config?.auth === "oauth" && sameEndpoint(config.endpoint, server.endpoint);
+  }
+
+  async #configurationRevision(config: PortalConfig): Promise<string> {
+    const token = config.auth === "token" ? this.env.MCP_PORTAL_TOKEN ?? "" : "";
+    const digest = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(`${config.auth}\u0000${token}`),
+    );
+    return hexEncode(new Uint8Array(digest));
+  }
+
+  override async getConnection(endpoint: string): Promise<McpConnection> {
+    const config = readPortalConfig(this.env);
+    const server = this.server();
+    if (!config || !server || !sameEndpoint(config.endpoint, endpoint)
+        || portalAuthRequiresReconnect(server.auth, config.auth)) {
+      throw new Error("This deployment's MCP portal configuration changed. Reconnect the account.");
+    }
+    const revision = await this.#configurationRevision(config);
+    const previous = this.ctx.storage.kv.get<string>("portalConfigRevision");
+    if (previous === undefined) {
+      this.ctx.storage.kv.put("portalConfigRevision", revision);
+    } else if (previous !== revision) {
+      this.invalidateConnectionState();
+      this.ctx.storage.kv.put("portalConfigRevision", revision);
+    }
+    return super.getConnection(endpoint);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -309,10 +370,35 @@ export class GatekeeperUserImpl
     // here rather than only in the form that normally builds these URLs.
     const scope = parseToolScope(requested);
     requirePortalServerScope(scope);
-    const [catalog, portalServers] = await Promise.all([
-      fetchTools(this.env, this.#account(), server.endpoint),
-      fetchPortalServers(this.env, this.#account(), server.endpoint),
-    ]);
+    const account = this.#account();
+    const listedServers = await tryListPortalServers(this.env, account, server.endpoint);
+    if (listedServers === null) {
+      // The server-list result is advisory metadata, but the endpoint still has to prove it implements
+      // the portal capability before a portal-scoped binding can be minted.
+      const portalTool = await withClient(this.env, account, server.endpoint,
+        client => client.findTool(PORTAL_LIST_SERVERS_TOOL));
+      if (!portalTool) {
+        throw new Error("The configured MCP endpoint does not expose the portal server-list tool.");
+      }
+    }
+    const portalServers = listedServers ?? [];
+
+    // Fetch only the names validation still needs. Named grants prove each selected name. A reported
+    // server needs no catalog scan; an unreported server needs one prefixed tool as fallback evidence.
+    const requestedTools = scope.tools ? new Set(scope.tools) : undefined;
+    const catalog = requestedTools
+      ? await withClient(this.env, account, server.endpoint,
+        client => client.listMatchingToolIndex(
+          requestedTools.size,
+          tool => requestedTools.has(tool.name),
+        ))
+      : portalServers.some(candidate => candidate.id === scope.serverId)
+      ? { tools: [], truncated: false }
+      : await withClient(this.env, account, server.endpoint,
+        client => client.listMatchingToolIndex(
+          1,
+          tool => toolBelongsToServer(tool.name, scope.serverId),
+        ));
     const upstream = validateToolScopeAgainstCatalog(
       scope,
       catalog,
@@ -324,7 +410,7 @@ export class GatekeeperUserImpl
       endpoint: server.endpoint,
       serverId: server.serverId,
       serverName: config.name,
-      scopeServerName: upstream?.name ?? scope.serverId!,
+      scopeServerName: upstream?.name ?? scope.serverId,
       scope,
     };
     return { class: this.ctx.exports.McpGatekeeperImpl({ props }), resource };
@@ -363,7 +449,9 @@ export class McpPortalVerifier
 class McpServerConfiguratorUI extends RpcTarget implements McpServerConfiguratorRpc {
   #env: Env;
   #account: DurableObjectStub<McpAccount>;
-  #toolsPromise: Promise<ToolCatalog> | undefined;
+  #serverPromise: Promise<ConnectedServer> | undefined;
+  #toolIndexPromise: Promise<ToolIndex> | undefined;
+  #toolsPromise: { serverId: string; catalog: Promise<ToolCatalog> } | undefined;
 
   constructor(env: Env, account: DurableObjectStub<McpAccount>) {
     super();
@@ -372,41 +460,62 @@ class McpServerConfiguratorUI extends RpcTarget implements McpServerConfigurator
   }
 
   async getEndpoint(): Promise<string> {
-    return (await this.#account.getServer()).endpoint;
+    return (await this.#server()).endpoint;
   }
 
-  // One `tools/list` per configurator frame, shared by every question the form asks.
-  #tools(): Promise<ToolCatalog> {
-    this.#toolsPromise ??= (async () => {
-      const server = await this.#account.getServer();
-      return await fetchTools(this.#env, this.#account, server.endpoint);
+  #server(): Promise<ConnectedServer> {
+    return this.#serverPromise ??= this.#account.getServer();
+  }
+
+  // One bounded survey of the portal per configurator frame. Authoritative for which tools the form
+  // offers and how each is classified; the detailed fetch below only adds text for the ones that fit.
+  #toolIndex(): Promise<ToolIndex> {
+    this.#toolIndexPromise ??= (async () => {
+      const server = await this.#server();
+      return fetchToolIndex(
+        this.#env, this.#account, server.endpoint, MAX_PORTAL_TOOL_INDEX);
     })();
-    return this.#toolsPromise;
+    return this.#toolIndexPromise;
   }
 
-  // The upstream servers behind a portal, derived from the tool list so there is no separate probe
-  // to keep in step. Empty for a plain MCP server and for a portal currently fronting nothing; the
-  // form treats both as having nothing to grant rather than telling them apart.
+  // Retains only the currently selected server's detailed catalog. The form selects one server, so
+  // keeping every previous 96 KiB catalog would spend memory on state the UI no longer displays.
+  #tools(serverId: string): Promise<ToolCatalog> {
+    if (this.#toolsPromise?.serverId !== serverId) {
+      const catalog = (async () => {
+        const server = await this.#server();
+        return fetchTools(
+          this.#env,
+          this.#account,
+          server.endpoint,
+          tool => toolBelongsToServer(tool.name, serverId),
+        );
+      })();
+      this.#toolsPromise = { serverId, catalog };
+    }
+    return this.#toolsPromise.catalog;
+  }
+
+  // Ask the portal for its server index without first loading every upstream tool. Empty for an
+  // endpoint that does not implement the portal contract or currently fronts nothing; either case
+  // leaves the form unsubmittable.
   async listServerOptions(): Promise<ConfiguratorUIOption[]> {
-    const { tools, truncated } = await this.#tools();
-    if (!looksLikePortal(tools, truncated)) return [];
+    const index = await this.#toolIndex();
+    if (!looksLikePortal(
+      index.tools, { truncated: index.truncated, cap: MAX_PORTAL_TOOL_INDEX })) return [];
+    const server = await this.#server();
+    const reported = await tryListPortalServers(
+      this.#env, this.#account, server.endpoint) ?? [];
 
-    const servers = reconcilePortalServers(
-      await this.#fetchPortalServers(), tools, truncated);
-    const trust = portalTrust(this.#env);
-    const grouped = groupToolsByServer(tools);
-
-    return servers.map(upstream => {
-      const owned = grouped.get(upstream.id) ?? [];
-      const reads = owned.filter(
-        tool => classifyTool(tool, trust).mode === "read").length;
+    const grouped = groupToolsByServer(index.tools);
+    return reconcilePortalServers(reported, index.tools, index.truncated).map(upstream => {
+      const count = grouped.get(upstream.id)?.length ?? 0;
       return {
         value: upstream.id,
         title: upstream.name,
-        subtitle: truncated
-          ? `Catalog truncated \u00b7 ${owned.length} shown, ${reads} shown read-only`
-          : `${owned.length} tool${owned.length === 1 ? "" : "s"} \u00b7 ` +
-            `${reads} read-only, ${owned.length - reads} need approval`,
+        subtitle: index.truncated
+          ? `${count} tool${count === 1 ? "" : "s"} shown`
+          : `${count} tool${count === 1 ? "" : "s"}`,
         // A server can be configured but switched off for this session, making a grant onto it valid
         // but presently empty, which the person choosing should see.
         meta: upstream.enabled ? undefined : "disabled in portal",
@@ -414,34 +523,24 @@ class McpServerConfiguratorUI extends RpcTarget implements McpServerConfigurator
     });
   }
 
-  // Asks the portal which upstream servers it fronts. A tool call, but the gatekeeper's own while
-  // building a configuration form rather than a Gadget's, so it does not pass through the approval
-  // queue. Advisory only: membership comes from tool-name prefixes, so a failure degrades to unnamed
-  // groups rather than an error.
-  async #fetchPortalServers(): Promise<PortalServer[]> {
-    const server = await this.#account.getServer();
-    return fetchPortalServers(this.#env, this.#account, server.endpoint);
-  }
-
-  // Tools the grant may cover, narrowed to one portal upstream server when `serverId` is given.
+  // Tools the grant may cover within one portal upstream server. The survey is checked before the
+  // detailed catalog is fetched, and `toolGrantOptions` decides what each source says.
   async listToolOptions(serverId?: string): Promise<ConfiguratorUIOption[]> {
-    const trust = portalTrust(this.#env);
-    const { tools, truncated } = await this.#tools();
-    requireCompleteCatalogForToolSelection(truncated);
-    const scope: ToolScope = serverId ? { serverId } : {};
-    const isPortal = looksLikePortal(tools, truncated);
-
-    return tools
-      .filter(tool => scopeAllows(scope, tool.name, isPortal))
-      .map(tool => ({
-        value: tool.name,
-        // Within a chosen server the `{server_id}_` prefix is noise, so it is shown stripped while
-        // `value` keeps the wire name the grant is actually recorded with.
-        title: tool.title ?? (serverId ? tool.name.slice(serverId.length + 1) : tool.name),
-        subtitle: tool.description?.split(/\r?\n/)[0],
-        // Surfaced here so the person granting can see, per tool, whether calls will interrupt them.
-        meta: classifyTool(tool, trust).mode === "read" ? "read-only" : "needs approval",
-      }));
+    if (!isValidToolName(serverId)) return [];
+    const index = await this.#toolIndex();
+    const indexed = groupToolsByServer(index.tools).get(serverId);
+    // Only server ids the bounded survey observed may allocate a cached fetch. Besides keeping this
+    // map bounded by the index, it prevents an arbitrary configurator RPC argument from turning into
+    // a full paginated scan of the portal. A server omitted by a truncated index remains grantable
+    // server-wide, but individual-tool selection has no complete survey to work from.
+    if (!indexed) return [];
+    const detailed = await this.#tools(serverId);
+    return toolGrantOptions({
+      serverId,
+      indexed,
+      described: detailed.tools,
+      trust: portalTrust(this.#env),
+    });
   }
 }
 
@@ -510,8 +609,8 @@ export class McpGatekeeperImpl
         `${label} \u2014 ${counts}. Other tools are refused.`
       : scope.serverId
       ? `All tools of the ${this.ctx.props.scopeServerName ?? scope.serverId} server on ` +
-        `${this.ctx.props.serverName}; ${tools.length} definition${plural} shown here ` +
-        `(${counts}). Other servers on it are refused.`
+        `${this.ctx.props.serverName}; ${tools.length} tool definition${plural} shown here ` +
+        `(${counts}). Use listTools({ search }) for others. Other servers are refused.`
       : `All ${tools.length} MCP tool${plural} on ${label} \u2014 ${counts}.`;
 
     return {

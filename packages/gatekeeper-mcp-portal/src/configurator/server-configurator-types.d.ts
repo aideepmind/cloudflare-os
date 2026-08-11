@@ -21,15 +21,13 @@ export type McpServerConfiguratorValues = {
   tools?: string | null;
   // Whether the upstream server list has been retrieved yet, discovered after first paint.
   //
-  // Only three states, and there is deliberately no "this is a plain endpoint" one. Every grant
-  // this connector makes names one upstream server, so a listing that comes back empty is a portal
-  // with nothing grantable rather than a bare endpoint to grant whole. A fourth state meaning the
-  // latter is what previously let a portal with no current upstreams serialize to its bare URL,
-  // taking in every server added to it later.
+  // There is deliberately no "this is a plain endpoint" state. Every grant this connector makes
+  // names one upstream server, so an empty listing is ungrantable rather than a bare endpoint to
+  // grant whole. Treating it as the latter would take in every server added to it later.
   //
-  // `"unavailable"` is failure, and is deliberately distinct from `"portal"`: not being able to ask
-  // which servers are behind the endpoint must block the grant.
-  endpointKind?: "unknown" | "portal" | "unavailable";
+  // `"empty"` is a successful response with no direct upstream tools; `"unavailable"` is a failed
+  // request. Both block the grant, but they need different remediation.
+  endpointKind?: "unknown" | "portal" | "empty" | "unavailable";
 };
 
 // Capability the configurator iframe is given, to describe the account's server.

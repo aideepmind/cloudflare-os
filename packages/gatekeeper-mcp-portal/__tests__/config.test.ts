@@ -7,6 +7,7 @@ import {
   portalTrust,
   readPortalConfig,
   requirePortalServerScope,
+  toolGrantOptions,
 } from "../src/config.js";
 
 function env(overrides: Record<string, string> = {}): Env {
@@ -139,9 +140,13 @@ describe("portalAuthRequiresReconnect", () => {
     expect(portalAuthRequiresReconnect("token", "oauth")).toBe(true);
   });
 
-  it("allows none and oauth to differ after probing the endpoint", () => {
+  it("allows an oauth-configured portal to prove public during probing", () => {
     expect(portalAuthRequiresReconnect("none", "oauth")).toBe(false);
-    expect(portalAuthRequiresReconnect("oauth", "none")).toBe(false);
+  });
+
+  it("keeps explicitly unauthenticated mode strict", () => {
+    expect(portalAuthRequiresReconnect("oauth", "none")).toBe(true);
+    expect(portalAuthRequiresReconnect("none", "none")).toBe(false);
   });
 });
 
@@ -221,5 +226,75 @@ describe("portalTokenFor", () => {
       MCP_PORTAL_TOKEN: "v2-secret",
     });
     expect(portalTokenFor(configured, "https://gw.example.com/mcp")).toBeNull();
+  });
+});
+
+describe("toolGrantOptions", () => {
+  const indexed = [
+    { name: "google_list_events", annotations: { readOnlyHint: true } },
+    { name: "google_delete_event", annotations: { readOnlyHint: false } },
+    { name: "google_send_mail" },
+  ];
+
+  it("classifies from the survey, not from whether the text fetch reached the tool", () => {
+    // The defect this pins down: a portal's largest servers publish more tool schemas than one
+    // listing can carry, so the detailed catalog stops early. Labelling from it marked every tool
+    // past the cut "needs approval", and a person granted them expecting to be asked -- while
+    // `findTool` later fetched the real definition, saw `readOnlyHint`, and ran them unprompted.
+    const options = toolGrantOptions({
+      serverId: "google",
+      indexed,
+      described: [],
+      trust: "byo",
+    });
+    expect(options.map(option => [option.value, option.meta])).toEqual([
+      ["google_list_events", "read-only"],
+      ["google_delete_event", "needs approval"],
+      ["google_send_mail", "needs approval"],
+    ]);
+  });
+
+  it("uses the detailed catalog only for text, and degrades to the bare name without it", () => {
+    const options = toolGrantOptions({
+      serverId: "google",
+      indexed,
+      described: [{
+        name: "google_list_events",
+        title: "List events",
+        description: "Lists calendar events.\nSecond line ignored.",
+      }],
+      trust: "byo",
+    });
+    expect(options[0]).toEqual({
+      value: "google_list_events",
+      title: "List events",
+      subtitle: "Lists calendar events.",
+      meta: "read-only",
+    });
+    // No detail for this one: the prefix is still stripped, and no description is invented.
+    expect(options[1]).toMatchObject({ title: "delete_event", subtitle: undefined });
+  });
+
+  it("does not let a portal's annotations drive auto-approval labels on an unvetted portal", () => {
+    // `meta` reports only read-versus-action, which is the distinction the person granting acts on.
+    // Auto-approval needs a vetted deployment as well, and is not something this form claims.
+    for (const trust of ["vetted", "byo"] as const) {
+      const options = toolGrantOptions({ serverId: "google", indexed, described: [], trust });
+      expect(options.map(option => option.meta))
+        .toEqual(["read-only", "needs approval", "needs approval"]);
+    }
+  });
+
+  it("caps one server's picker at the named-grant limit", () => {
+    const many = Array.from({ length: 201 }, (_, i) => ({ name: `google_tool_${i}` }));
+    const options = toolGrantOptions({
+      serverId: "google",
+      indexed: many,
+      described: [],
+      trust: "byo",
+    });
+
+    expect(options).toHaveLength(200);
+    expect(options.at(-1)?.value).toBe("google_tool_199");
   });
 });

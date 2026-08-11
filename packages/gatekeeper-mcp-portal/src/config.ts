@@ -6,11 +6,14 @@
 // connector instead of offering a dead end. See the README.
 
 import type { SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
+import type { ConfiguratorUIOption } from "@gadgets/configurator-ui";
 import type { ConnectedServer, ServerAuthKind } from "@gadgets/mcp-shared/account";
+import type { IndexedTool, McpTool } from "@gadgets/mcp-shared/client";
 import type { ToolScope } from "@gadgets/mcp-shared/scope";
 import { fetchOptions } from "@gadgets/mcp-shared/fetch";
 import { sameEndpoint } from "@gadgets/mcp-shared/scope";
-import type { ServerTrust } from "@gadgets/mcp-shared/tools";
+import { classifyAnnotations, MAX_TOOLS_PER_SERVER, type ServerTrust }
+  from "@gadgets/mcp-shared/tools";
 
 // The configured portal, once the deployment's vars have been read and validated.
 export type PortalConfig = {
@@ -82,11 +85,52 @@ export function readPortalConfig(env: Env): PortalConfig | null {
 // resource URL is not only ever produced by the form: an agent passes a concrete one to
 // `requestConnection`, and any URL under the portal's origin reaches `getGatekeeperClassFor`. A
 // rule that lives only in the iframe is a suggestion; the facet is minted here.
-export function requirePortalServerScope(scope: ToolScope): void {
+// Narrows the scope on return, so a caller that has checked cannot then have to assert the very
+// thing this function exists to establish.
+export function requirePortalServerScope(
+  scope: ToolScope,
+): asserts scope is ToolScope & { serverId: string } {
   if (scope.serverId !== undefined) return;
   throw new Error(
     "A portal grant has to name one of the servers behind the portal. Granting the portal itself " +
     "would cover every system connected to it, including ones added later.");
+}
+
+/**
+ * Renders one upstream server's tools as choices on the grant form.
+ *
+ * Two sources, because a server's tools may not fit one listing. `indexed` is the bounded survey: it
+ * carries the annotations classification is decided from for every option this function receives.
+ * `described` is the detailed catalog, which supplies titles and descriptions for as many tools as
+ * the byte budget allowed -- the largest servers behind a portal exceed it, so some options carry no
+ * descriptive text.
+ *
+ * The classification is taken from `indexed` alone, never from whether a tool appears in
+ * `described`. Telling someone a tool "needs approval" when it will in fact run unprompted is the
+ * one error this form must not make, and deriving the label from the truncated source would make it
+ * for every tool past the cut.
+ */
+export function toolGrantOptions(args: {
+  serverId: string;
+  indexed: readonly IndexedTool[];
+  described: readonly McpTool[];
+  trust: ServerTrust;
+}): ConfiguratorUIOption[] {
+  const detailsByName = new Map(args.described.map(tool => [tool.name, tool]));
+  return args.indexed.slice(0, MAX_TOOLS_PER_SERVER).map(entry => {
+    const detail = detailsByName.get(entry.name);
+    return {
+      value: entry.name,
+      // Within a chosen server the `{server_id}_` prefix is noise, so it is shown stripped while
+      // `value` keeps the wire name the grant is actually recorded with.
+      title: detail?.title ?? entry.name.slice(args.serverId.length + 1),
+      subtitle: detail?.description?.split(/\r?\n/)[0],
+      // Surfaced here so the person granting can see, per tool, whether calls will interrupt them.
+      meta: classifyAnnotations(entry.annotations, args.trust).mode === "read"
+        ? "read-only"
+        : "needs approval",
+    };
+  });
 }
 
 // The single resource type this connector offers, scoped to the configured portal's origin.
@@ -118,7 +162,7 @@ export function portalServer(config: PortalConfig): ConnectedServer {
 export function portalAuthRequiresReconnect(
   connected: ServerAuthKind, configured: ServerAuthKind,
 ): boolean {
-  return (connected === "token") !== (configured === "token");
+  return configured === "oauth" ? connected === "token" : connected !== configured;
 }
 
 // The preissued token, but only for the endpoint the deployment currently names.
