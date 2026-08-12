@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 
 import { ActionInvalidatedError, ActionStore } from "../src/action-store.js";
-import { ACTION_INVALIDATED_ERROR_CODE } from "@gadgets/workshop-shared/gatekeeper";
 import {
   McpProtocolError,
   McpSessionExpiredError,
@@ -51,13 +50,10 @@ describe("ActionStore", () => {
     const store = new ActionStore(fakeSql());
     const staged = store.stage("send", {});
 
-    const error = await store.apply(staged.id, async () => {
+    const result = await store.apply(staged.id, async () => {
       throw new ActionInvalidatedError("Policy changed. Stage the call again.");
-    }, log).catch(err => err);
-    expect(error).toMatchObject({
-      message: "Policy changed. Stage the call again.",
-      code: ACTION_INVALIDATED_ERROR_CODE,
-    });
+    }, log);
+    expect(result).toEqual({ outcome: "invalidated" });
 
     expect(store.get(staged.id)).toMatchObject({
       state: "failed",

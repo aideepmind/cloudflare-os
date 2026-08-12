@@ -5,7 +5,6 @@ import { callMayHaveTakenEffect, type McpClient, type McpToolCallResult } from "
 import type { McpLog } from "./log.js";
 import type { StoredAction } from "./session.js";
 import { toCallResult } from "./tools.js";
-import { ACTION_INVALIDATED_ERROR_CODE } from "@gadgets/workshop-shared/gatekeeper";
 
 const MAX_RESULT_BYTES = 128 * 1024;
 const MAX_RETAINED_ACTIONS = 100;
@@ -54,8 +53,6 @@ export const APPLY_OUTCOME_UNKNOWN_MESSAGE =
 
 /** The approved tool or account policy changed before dispatch, so the action must be restaged. */
 export class ActionInvalidatedError extends Error {
-  readonly code = ACTION_INVALIDATED_ERROR_CODE;
-
   constructor(message: string) {
     super(message);
     this.name = "ActionInvalidatedError";
@@ -179,7 +176,7 @@ export class ActionStore {
     id: number,
     call: (fn: (client: McpClient) => Promise<McpToolCallResult>) => Promise<McpToolCallResult>,
     log: McpLog,
-  ): Promise<void> {
+  ): Promise<void | { outcome: "invalidated" }> {
     const stored = this.get(id);
     if (!stored) throw new Error(`MCP action ${id} is unknown.`);
     if (stored.state === "applied") return;
@@ -217,7 +214,7 @@ export class ActionStore {
         log.warn("tool call invalidated before dispatch", {
           event: "action.apply.invalidated", actionId: id, toolName: stored.toolName, error: err,
         });
-        throw err;
+        return { outcome: "invalidated" };
       }
       const mayHaveLanded = dispatched && callMayHaveTakenEffect(err);
       stored.state = "failed";

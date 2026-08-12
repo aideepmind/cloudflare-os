@@ -570,13 +570,6 @@ export class McpClient {
     return this.#list(maxTools, include, clampToolDefinition);
   }
 
-  // Surveys the endpoint without paying for descriptions and schemas, so many more tools fit the
-  // same byte budget. Entries carry the annotations policy reads but are not tool definitions; see
-  // `IndexedTool`. Resolve a full definition with `findTool` before use.
-  async listToolIndex(maxTools: number, include?: McpToolFilter): Promise<ToolIndex> {
-    return this.#list(maxTools, include, indexTool);
-  }
-
   /** Collects at most `maxTools` matching index entries without scanning later pages. */
   async listMatchingToolIndex(maxTools: number, include: McpToolFilter): Promise<ToolIndex> {
     return this.#list(maxTools, include, indexTool, true);

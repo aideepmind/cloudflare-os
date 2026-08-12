@@ -14,7 +14,6 @@ import {
   McpSessionExpiredError,
   type McpToolFilter,
   type ToolCatalog,
-  type ToolIndex,
 }
   from "./client.js";
 import { fetchOptions, type InsecureEnv } from "./fetch.js";
@@ -190,19 +189,4 @@ export async function fetchTools(
 ): Promise<ToolCatalog> {
   return withClient(env, account, endpoint,
     client => client.listTools(MAX_TOOLS_PER_SERVER, include));
-}
-
-/**
- * Surveys an endpoint's tools without retaining schemas or descriptions, so `maxTools` can be far
- * larger than a catalog's. Entries are not tool definitions; see `IndexedTool`.
- */
-export async function fetchToolIndex(
-  env: ConnectionEnv,
-  account: ConnectionAccount,
-  endpoint: string,
-  maxTools: number,
-  include?: McpToolFilter,
-): Promise<ToolIndex> {
-  return withClient(env, account, endpoint,
-    client => client.listToolIndex(maxTools, include));
 }

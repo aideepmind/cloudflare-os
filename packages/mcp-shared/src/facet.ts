@@ -207,8 +207,7 @@ export abstract class McpFacetBase<
   }
 
   /** Resolves one granted tool, fetching it when the described catalog omitted it. */
-  async findTool(name: string, refreshPolicy = false): Promise<ClassifiedTool | undefined> {
-    if (refreshPolicy) return (await this.resolveToolForCall(name))?.entry;
+  async findTool(name: string): Promise<ClassifiedTool | undefined> {
     // Grant restrictions can be enforced without loading anything. A portal-native exclusion needs
     // the endpoint kind below, except for a server scope, which by definition belongs to a portal.
     if (!scopeAllows(this.scope, name, this.scope.serverId !== undefined)) return undefined;
@@ -216,10 +215,8 @@ export abstract class McpFacetBase<
     const catalog = await this.catalog();
     if (!scopeAllows(this.scope, name, catalog.isPortal)) return undefined;
     const described = catalog.tools.find(entry => entry.tool.name === name);
-    if (!refreshPolicy) {
-      if (described) return described;
-      if (!catalog.truncated) return undefined;
-    }
+    if (described) return described;
+    if (!catalog.truncated) return undefined;
 
     const load = (candidate: string) => this.runDiscovery(deadline =>
       this.call(client => client.findTool(candidate), { deadline }));
@@ -320,10 +317,10 @@ export abstract class McpFacetBase<
   }
 
   /** Applies an approved action without retrying an outcome-unknown write. */
-  async applyAction(action: number): Promise<void> {
+  async applyAction(action: number): Promise<void | { outcome: "invalidated" }> {
     const stored = this.#actions().get(action);
     if (!stored) throw new Error(`MCP action ${action} is unknown.`);
-    await this.#actions().apply(
+    return this.#actions().apply(
       action,
       fn => this.call(async (client, connection) => {
         if (stored.connectionGeneration === undefined || stored.policyFingerprint === undefined

@@ -70,7 +70,7 @@ export interface McpSessionHost {
 
   tools(): Promise<ClassifiedTool[]>;
   searchTools(query: string): Promise<ClassifiedTool[]>;
-  findTool(name: string, refreshPolicy?: boolean): Promise<ClassifiedTool | undefined>;
+  findTool(name: string): Promise<ClassifiedTool | undefined>;
   resolveToolForCall(name: string): Promise<{
     entry: ClassifiedTool;
     policyFingerprint: string;

@@ -153,7 +153,8 @@ it("refreshes a hydrated tool's policy when requested for dispatch", async () =>
 
   await expect(subject.findTool("search_issues")).resolves.toMatchObject({ mode: "read" });
   subject.remoteTools = [{ name: "search_issues", annotations: { readOnlyHint: false } }];
-  await expect(subject.findTool("search_issues", true)).resolves.toMatchObject({ mode: "action" });
+  await expect(subject.resolveToolForCall("search_issues"))
+    .resolves.toMatchObject({ entry: { mode: "action" } });
   expect(subject.remoteCalls).toBe(2);
 });
 
@@ -164,7 +165,7 @@ it("refreshes portal identity before dispatching a newly portal-native tool", as
     { name: "portal_toggle_servers" },
   ];
 
-  await expect(subject.findTool("portal_toggle_servers", true)).resolves.toBeUndefined();
+  await expect(subject.resolveToolForCall("portal_toggle_servers")).resolves.toBeUndefined();
 });
 
 it("bounds concurrent discovery work across distinct requests", async () => {

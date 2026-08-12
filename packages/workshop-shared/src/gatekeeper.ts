@@ -18,9 +18,6 @@
 
 import type { WorkerEntrypoint, DurableObject, RpcTarget, RpcStub } from "cloudflare:workers";
 
-/** RPC error code returned when an approved action became invalid before dispatch. */
-export const ACTION_INVALIDATED_ERROR_CODE = "GATEKEEPER_ACTION_INVALIDATED";
-
 /**
  * A pagination cursor.
  *
@@ -699,10 +696,14 @@ export interface Gatekeeper<Session> extends DurableObject {
   // If this throws an exception, the user will be informed that the action failed and given the
   // opportunity to retry or discard.
   //
+  // If policy or authority changed after approval but before dispatch, return
+  // `{ outcome: "invalidated" }`. The Workshop records the action as rejected rather than offering
+  // a retry under the stale approval.
+  //
   // Depending on policy conditions, an action may be approved and applied automatically. However,
   // the gatekeeper is nevertheless expected to submit all actions for approval; there is no mode
   // in which it's OK to skip the check.
-  applyAction(action: number): Promise<void>;
+  applyAction(action: number): Promise<void | { outcome: "invalidated" }>;
 
   // Indicates that an action was rejected by the user. The gatekeeper should clean up any
   // associated storage.

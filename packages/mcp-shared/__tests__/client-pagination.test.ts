@@ -202,7 +202,7 @@ describe("McpClient.listTools", () => {
       annotations: { readOnlyHint: i % 2 === 0 },
     })) }]);
     const client = new McpClient("https://mcp.example.com/mcp", async () => null);
-    const { tools, truncated } = await client.listToolIndex(500);
+    const { tools, truncated } = await client.listMatchingToolIndex(500, () => true);
     expect(tools).toHaveLength(400);
     expect(truncated).toBe(false);
     expect(tools[399]).toEqual({
@@ -234,8 +234,10 @@ describe("McpClient.listTools", () => {
     expect(catalog.truncated).toBe(true);
     expect(catalog.tools.length).toBeLessThan(wireTools.length);
 
-    const index = await client.listToolIndex(selected.size, include);
-    expect(index.truncated).toBe(false);
+    const index = await client.listMatchingToolIndex(selected.size, include);
+    // Stopping once every requested name is found leaves the overall endpoint index incomplete,
+    // but the returned names are enough to validate this exact grant.
+    expect(index.truncated).toBe(true);
     expect(index.tools.map(tool => tool.name)).toEqual([...selected]);
   });
 
@@ -263,7 +265,7 @@ describe("McpClient.listTools", () => {
       { name: "a", annotations: { readOnlyHint: true, title: "z".repeat(10_000) } },
     ] }]);
     const client = new McpClient("https://mcp.example.com/mcp", async () => null);
-    const { tools: [entry] } = await client.listToolIndex(10);
+    const { tools: [entry] } = await client.listMatchingToolIndex(10, () => true);
     expect(entry.annotations?.readOnlyHint).toBe(true);
     expect(entry.annotations).not.toHaveProperty("title");
   });
@@ -274,7 +276,7 @@ describe("McpClient.listTools", () => {
       annotations: { readOnlyHint: { text: "x".repeat(10_000) }, destructiveHint: false },
     }] }]);
     const client = new McpClient("https://mcp.example.com/mcp", async () => null);
-    const { tools: [entry] } = await client.listToolIndex(10);
+    const { tools: [entry] } = await client.listMatchingToolIndex(10, () => true);
     expect(entry.annotations).toEqual({
       readOnlyHint: undefined,
       destructiveHint: false,
@@ -349,7 +351,8 @@ describe("McpClient.listTools", () => {
     });
     const client = new McpClient("https://mcp.example.com/mcp", async () => null);
 
-    await expect(client.listToolIndex(1000)).resolves.toEqual({ tools: [], truncated: true });
+    await expect(client.listMatchingToolIndex(1000, () => true))
+      .resolves.toEqual({ tools: [], truncated: true });
     expect(calls).toBe(5);
   });
 
