@@ -140,12 +140,15 @@ export async function guardedFetch(
   let method = init.method ?? "GET";
   let body = init.body;
   const origin = new URL(url).origin;
-  const remaining = options.deadline === undefined
-    ? options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
-    : Math.max(0, options.deadline - Date.now());
-  if (remaining === 0) throw new FetchNotStartedError("The outbound operation timed out.");
-  const timeout = AbortSignal.timeout(remaining);
-  const signal = init.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
+  let signal = init.signal ?? undefined;
+  if (options.deadline !== undefined || options.timeoutMs !== undefined) {
+    const remaining = options.deadline === undefined
+      ? options.timeoutMs!
+      : Math.max(0, options.deadline - Date.now());
+    if (remaining === 0) throw new FetchNotStartedError("The outbound operation timed out.");
+    const timeout = AbortSignal.timeout(remaining);
+    signal = signal ? AbortSignal.any([signal, timeout]) : timeout;
+  }
 
   for (let hop = 0; ; hop++) {
     const response = await fetch(current, {

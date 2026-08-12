@@ -15,7 +15,7 @@ import {
   type ToolCatalog,
 }
   from "./client.js";
-import { DEFAULT_REQUEST_TIMEOUT_MS, fetchOptions, type InsecureEnv } from "./fetch.js";
+import { fetchOptions, type InsecureEnv } from "./fetch.js";
 import { MAX_TOOLS_PER_SERVER } from "./tools.js";
 
 // The environment this module reads. Each Worker's own `Env` satisfies it structurally.
@@ -99,7 +99,7 @@ export async function withClient<T>(
       return authorization;
     }, sessionId, {
       ...fetchOptions(env),
-      deadline: options.deadline ?? Date.now() + DEFAULT_REQUEST_TIMEOUT_MS,
+      deadline: options.deadline,
     });
   let persistedSessionId = sessionId;
 

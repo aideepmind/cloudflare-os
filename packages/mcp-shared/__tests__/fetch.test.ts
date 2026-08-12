@@ -34,6 +34,17 @@ afterEach(() => {
 });
 
 describe("guardedFetch", () => {
+  it("does not impose a deadline unless the caller requests one", async () => {
+    let signal: AbortSignal | null | undefined;
+    vi.stubGlobal("fetch", async (_input: string, init: RequestInit) => {
+      signal = init.signal;
+      return new Response("ok");
+    });
+
+    await guardedFetch("https://mcp.example.com/mcp", {});
+    expect(signal).toBeUndefined();
+  });
+
   it("refuses a blocked host outright", async () => {
     stubChain({});
     await expect(guardedFetch("http://169.254.169.254/", {})).rejects.toThrow(/Refusing to contact/);
