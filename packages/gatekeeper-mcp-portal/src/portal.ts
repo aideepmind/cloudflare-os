@@ -284,6 +284,24 @@ export class McpAccount extends McpAccountBase<Env> {
     return hexEncode(new Uint8Array(digest));
   }
 
+  override async beginConnect(
+    initiationNonce: string,
+    target: ConnectedServer | null,
+  ): Promise<ConnectOutcome> {
+    const outcome = await super.beginConnect(initiationNonce, target);
+    if (outcome.kind === "done") {
+      const config = readPortalConfig(this.env);
+      const server = this.server();
+      if (config && server && sameEndpoint(config.endpoint, server.endpoint)) {
+        this.ctx.storage.kv.put(
+          "portalConfigRevision",
+          await this.#configurationRevision(config),
+        );
+      }
+    }
+    return outcome;
+  }
+
   override async getConnection(endpoint: string): Promise<McpConnection> {
     const config = readPortalConfig(this.env);
     const server = this.server();
@@ -294,6 +312,10 @@ export class McpAccount extends McpAccountBase<Env> {
     const revision = await this.#configurationRevision(config);
     const previous = this.ctx.storage.kv.get<string>("portalConfigRevision");
     if (previous === undefined) {
+      // Existing token accounts predate the revision marker. Their cached session may have been
+      // minted under a different configured token, so invalidate it once before establishing the
+      // current revision as the baseline. New connects record the revision in `beginConnect()`.
+      if (server.auth === "token") this.invalidateConnectionState();
       this.ctx.storage.kv.put("portalConfigRevision", revision);
     } else if (previous !== revision) {
       this.invalidateConnectionState();
