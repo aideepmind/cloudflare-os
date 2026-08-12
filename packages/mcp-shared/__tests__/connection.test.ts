@@ -147,41 +147,41 @@ it("persists a successful initialization before running the requested operation"
   expect(writes).toEqual(["new-session"]);
 });
 
-it("keeps a successful result when only post-call session persistence loses a race", async () => {
-  const methods: string[] = [];
-  vi.stubGlobal("fetch", async (_input: unknown, init?: RequestInit) => {
-    methods.push(init?.method ?? "GET");
-    return new Response(null, { status: 204 });
+it("does not persist a transport session changed after the requested operation", async () => {
+  const account: ConnectionAccount = {
+    async getConnection() {
+      return { authorization: "token", sessionId: "old-session", generation: 1 };
+    },
+    async assertConnectionCurrent() {},
+    async setMcpSessionId() { throw new Error("unexpected persistence"); },
+    async noteCredentialsExpired() {},
+  };
+
+  await expect(withClient({}, account, "https://mcp.example.com", async client => {
+    client.sessionId = "rotated-session";
+    return "completed";
+  }, { retryOnExpiry: false })).resolves.toBe("completed");
+});
+
+it("reports credentials expired when session recovery is rejected", async () => {
+  let requests = 0;
+  let expired = 0;
+  vi.stubGlobal("fetch", async () => {
+    requests++;
+    return new Response(null, { status: requests === 1 ? 404 : 401 });
   });
   const account: ConnectionAccount = {
     async getConnection() {
-      return { authorization: "token", sessionId: "old-session", generation: 1 };
+      return { authorization: "token", sessionId: "expired-session", generation: 1 };
     },
     async assertConnectionCurrent() {},
-    async setMcpSessionId() { return false; },
-    async noteCredentialsExpired() {},
+    async setMcpSessionId() { return true; },
+    async noteCredentialsExpired() { expired++; },
   };
 
-  await expect(withClient({}, account, "https://mcp.example.com", async client => {
-    client.sessionId = "rotated-session";
-    return "completed";
-  }, { retryOnExpiry: false })).resolves.toBe("completed");
+  const error = await withClient({}, account, "https://mcp.example.com",
+    client => client.listTools(1)).catch(err => err);
 
-  expect(methods).toEqual(["DELETE"]);
-});
-
-it("keeps a successful result when post-call session persistence fails", async () => {
-  const account: ConnectionAccount = {
-    async getConnection() {
-      return { authorization: "token", sessionId: "old-session", generation: 1 };
-    },
-    async assertConnectionCurrent() {},
-    async setMcpSessionId() { throw new Error("storage unavailable"); },
-    async noteCredentialsExpired() {},
-  };
-
-  await expect(withClient({}, account, "https://mcp.example.com", async client => {
-    client.sessionId = "rotated-session";
-    return "completed";
-  }, { retryOnExpiry: false })).resolves.toBe("completed");
+  expect(error).toBeInstanceOf(McpCallNotDispatchedError);
+  expect(expired).toBe(1);
 });

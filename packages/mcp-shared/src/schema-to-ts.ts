@@ -338,8 +338,8 @@ export function generateSessionTypes(args: {
   lines.push(" * `callTool` queues them for approval and returns `{ status: \"pending\" }`; the result");
   lines.push(" * becomes available through `getActionResult` once a human approves.");
   lines.push(" * When using this session from `executeCode`, return from that executeCode call as soon as");
-  lines.push(" * an action is pending so its approval can appear in chat. The agent resumes after the");
-  lines.push(" * decision; call `getActionResult` then.");
+  lines.push(" * an action is pending so its approval can appear in chat. Approval resumes the agent;");
+  lines.push(" * denial ends the turn. Call `getActionResult` after approval.");
   if (args.trust === "byo") {
     lines.push(" *");
     lines.push(" * This server was supplied by the user, so no action is ever applied automatically.");

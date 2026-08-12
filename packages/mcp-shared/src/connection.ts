@@ -27,8 +27,6 @@ export type ConnectionEnv = InsecureEnv & {
 export type WithClientOptions = {
   // False for a call that may have taken effect, so a dropped session is not retried. See above.
   retryOnExpiry?: boolean;
-  // Absolute deadline shared with time spent waiting for a discovery slot.
-  deadline?: number;
 };
 
 // Everything an account must hand over before a request can be made. One value rather than two
@@ -97,44 +95,40 @@ export async function withClient<T>(
         await account.assertConnectionCurrent(endpoint, generation);
       }
       return authorization;
-    }, sessionId, {
-      ...fetchOptions(env),
-      deadline: options.deadline,
-    });
+    }, sessionId, fetchOptions(env));
   let persistedSessionId = sessionId;
 
-  const persistSession = async (required: boolean): Promise<void> => {
+  const persistSession = async (): Promise<void> => {
     if (client.sessionId === persistedSessionId) return;
-    let accepted: boolean;
-    try {
-      accepted = await account.setMcpSessionId(
-        endpoint, generation, persistedSessionId, client.sessionId);
-    } catch (err) {
-      if (required) throw err;
-      return;
-    }
+    const accepted = await account.setMcpSessionId(
+      endpoint, generation, persistedSessionId, client.sessionId);
     if (!accepted) {
       await client.closeSession().catch(() => undefined);
-      if (required) {
-        throw new McpCallNotDispatchedError(
-          "Another request replaced this MCP transport session. Try again.");
-      }
-      return;
+      throw new McpCallNotDispatchedError(
+        "Another request replaced this MCP transport session. Try again.");
     }
     persistedSessionId = client.sessionId;
   };
 
   const initialize = async (): Promise<void> => {
     await client.initialize(clientName(env));
-    await persistSession(true);
+    await persistSession();
   };
 
-  const run = async (): Promise<T> => {
-    const result = await fn(client);
-    // The requested operation already completed. Losing only the transport-session CAS must not
-    // turn a successful write into a retryable failure and send it a second time.
-    await persistSession(false);
-    return result;
+  const rejectCredentials = async (err: McpAuthRequiredError): Promise<never> => {
+    const rejected = new Error(
+      "The MCP server rejected this connection's credentials. Please reconnect the account.",
+      { cause: err });
+    let cause: unknown = rejected;
+    try {
+      await account.noteCredentialsExpired(endpoint, generation);
+    } catch (notificationError) {
+      cause = new AggregateError(
+        [rejected, notificationError],
+        "The credentials were rejected and their expiry notification failed.",
+      );
+    }
+    throw new McpCallNotDispatchedError(rejected.message, cause);
   };
 
   try {
@@ -148,13 +142,19 @@ export async function withClient<T>(
         throw notDispatched(err);
       }
     }
-    return await run();
-  } catch (err) {
-    if (err instanceof McpSessionExpiredError) {
+    try {
+      return await fn(client);
+    } catch (err) {
+      if (!(err instanceof McpSessionExpiredError)) throw err;
       if (options.retryOnExpiry !== false) {
         client.sessionId = null;
-        await initialize();
-        return await run();
+        try {
+          await initialize();
+        } catch (initializeError) {
+          if (initializeError instanceof McpAuthRequiredError) throw initializeError;
+          throw notDispatched(initializeError);
+        }
+        return await fn(client);
       }
       // This call is not retried, since it may already have taken effect. The session is gone all
       // the same, so the cached id is dead: left in place it would fail every later call for a
@@ -163,21 +163,11 @@ export async function withClient<T>(
       if (persistedSessionId) {
         await account.setMcpSessionId(endpoint, generation, persistedSessionId, null);
       }
+      throw err;
     }
+  } catch (err) {
     if (err instanceof McpAuthRequiredError) {
-      const rejected = new Error(
-        "The MCP server rejected this connection's credentials. Please reconnect the account.",
-        { cause: err });
-      let cause: unknown = rejected;
-      try {
-        await account.noteCredentialsExpired(endpoint, generation);
-      } catch (notificationError) {
-        cause = new AggregateError(
-          [rejected, notificationError],
-          "The credentials were rejected and their expiry notification failed.",
-        );
-      }
-      throw new McpCallNotDispatchedError(rejected.message, cause);
+      return rejectCredentials(err);
     }
     throw err;
   }
