@@ -41,7 +41,7 @@ export class AutoApprovalDrainer {
     try {
       do {
         this.#draining.set(gatekeeperId, false);
-        await this.#drainOnce(gatekeeperId);
+        if (await this.#drainOnce(gatekeeperId) === "invalidated") return;
       } while (this.#draining.get(gatekeeperId));
     } finally {
       this.#draining.delete(gatekeeperId);
@@ -55,7 +55,7 @@ export class AutoApprovalDrainer {
   //
   // Eligibility requires BOTH signals: the author's `autoApprovable` verdict on the action AND a
   // user-enabled rule for the action's type on this gatekeeper.
-  async #drainOnce(gatekeeperId: number): Promise<void> {
+  async #drainOnce(gatekeeperId: number): Promise<"complete" | "invalidated"> {
     // Materialize a snapshot first: list() is a lazy generator over storage, and we mutate the
     // actions collection (via applyPendingAction) as we go.
     let pending = [...this.storage.actions.list()].filter(
@@ -83,7 +83,7 @@ export class AutoApprovalDrainer {
         // Attribute the auto-approval to the user who enabled the rule -- it runs under their
         // authority.
         const outcome = await this.applyPendingAction(fresh, rule.enabledBy, true);
-        if (outcome === "invalidated") break;
+        if (outcome === "invalidated") return "invalidated";
       } catch (err) {
         // Leave the action pending for manual handling and stop the drain (never skip ahead).
         logger.error("auto-approval failed", {
@@ -92,5 +92,6 @@ export class AutoApprovalDrainer {
         break;
       }
     }
+    return "complete";
   }
 }

@@ -176,6 +176,35 @@ describe("AutoApprovalDrainer.drain", () => {
     expect(getAction(storage, 2).state).toBe("pending");
   });
 
+  it("does not restart after invalidation when a concurrent drain requested a rerun", async () => {
+    let storage = makeStorage();
+    enableRule(storage);
+    putAction(storage, 1);
+    putAction(storage, 2);
+    const calls: number[] = [];
+    let release!: () => void;
+    const apply: ApplyPendingActionFn = record => {
+      calls.push(record.id);
+      return new Promise(resolve => {
+        release = () => {
+          record.state = "invalidated";
+          storage.actions.put(record);
+          resolve("invalidated");
+        };
+      });
+    };
+    const drainer = new AutoApprovalDrainer(storage, apply);
+
+    const first = drainer.drain(GK);
+    await flush();
+    await drainer.drain(GK);
+    release();
+    await first;
+
+    expect(calls).toEqual([1]);
+    expect(getAction(storage, 2).state).toBe("pending");
+  });
+
   // Two concurrent drains for the same gatekeeper must not double-apply. The input gate is open
   // across the apply await, so without the single-flight guard the second drain's pending re-check
   // would see the still-"pending" record and apply it again.
