@@ -287,7 +287,8 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     // the new portal's token.
     const generation = this.advanceConnectionGeneration();
     if (existing) this.ctx.storage.kv.delete("mcpSessionId");
-    if (existing && existing.endpoint !== server.endpoint) {
+    const endpointChanged = existing !== undefined && existing.endpoint !== server.endpoint;
+    if (existing && endpointChanged) {
       this.ctx.storage.kv.put("server", server);
       for (const key of [
         "tokens", "oauthClient", "oauthDiscovery", "oauthVerifier", "pendingAuth",
@@ -553,11 +554,11 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     }
     const pending = this.ctx.storage.kv.get<PendingAuthorization>("pendingAuth");
     if (!pending) return false;
+    const server = this.requireServer();
     // Single-use: consumed before the exchange, so a replayed callback cannot reach the token endpoint.
     this.ctx.storage.kv.delete("nonce");
     this.ctx.storage.kv.delete("pendingAuth");
 
-    const server = this.requireServer();
     if (!this.isCurrentConnection(server, pending.generation)) return false;
     let result: Awaited<ReturnType<typeof auth>>;
     try {
@@ -653,6 +654,15 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
       sessionId: this.ctx.storage.kv.get<string>("mcpSessionId") ?? null,
       generation,
     };
+  }
+
+  /** Fails if credentials captured for `generation` are no longer current for this endpoint. */
+  async assertConnectionCurrent(endpoint: string, generation: number): Promise<void> {
+    const server = this.server();
+    if (!server || !sameEndpoint(endpoint, server.endpoint)
+        || generation !== this.connectionGeneration()) {
+      throw new Error("This MCP connection changed before the request was sent. Try again.");
+    }
   }
 
   // Returns the bearer token for one captured connection generation, refreshing it when close to
@@ -777,15 +787,22 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
   }
 
   // Records the transport session id, so repeat calls skip the `initialize` handshake. An MCP call
-  // can finish after reconnecting; endpoint plus generation keep its old session out of new state.
+  // can finish after reconnecting or after another call replaced its session; endpoint, generation,
+  // and the previously read id keep either stale operation out of current state.
   async setMcpSessionId(
-    endpoint: string, generation: number, sessionId: string | null,
-  ): Promise<void> {
+    endpoint: string,
+    generation: number,
+    previousSessionId: string | null,
+    sessionId: string | null,
+  ): Promise<boolean> {
     const server = this.server();
     if (!server || !sameEndpoint(endpoint, server.endpoint)
-        || generation !== this.connectionGeneration()) return;
+        || generation !== this.connectionGeneration()) return false;
+    const currentSessionId = this.ctx.storage.kv.get<string>("mcpSessionId") ?? null;
+    if (currentSessionId !== previousSessionId) return false;
     if (sessionId) this.ctx.storage.kv.put("mcpSessionId", sessionId);
     else this.ctx.storage.kv.delete("mcpSessionId");
+    return true;
   }
 
   // Tells the Workshop the credentials need attention, at most once per expiry. A rejection can
