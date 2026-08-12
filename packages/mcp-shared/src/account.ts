@@ -166,6 +166,16 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     return null;
   }
 
+  /** Whether an unauthenticated target may follow a 401 into the standard OAuth flow. */
+  protected allowsOAuthFallback(_server: ConnectedServer): boolean {
+    return true;
+  }
+
+  /** Whether current connector configuration still permits this pending OAuth callback. */
+  protected allowsOAuthCallback(_server: ConnectedServer): boolean {
+    return true;
+  }
+
   // Relaxes host and scheme checks for local development against an MCP server on localhost.
   protected fetchOptions(): FetchOptions {
     return fetchOptions(this.env);
@@ -187,6 +197,13 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     const generation = this.connectionGeneration() + 1;
     this.ctx.storage.kv.put("connectionGeneration", generation);
     return generation;
+  }
+
+  /** Invalidates credentials captured by facets and clears their transport session. */
+  protected invalidateConnectionState(): void {
+    this.advanceConnectionGeneration();
+    this.ctx.storage.kv.delete("mcpSessionId");
+    this.ctx.storage.kv.put("expiredNotified", false);
   }
 
   private isCurrentConnection(server: ConnectedServer, generation: number): boolean {
@@ -288,7 +305,8 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     const generation = this.advanceConnectionGeneration();
     if (existing) this.ctx.storage.kv.delete("mcpSessionId");
     const endpointChanged = existing !== undefined && existing.endpoint !== server.endpoint;
-    if (endpointChanged) {
+    const authChanged = existing !== undefined && existing.auth !== server.auth;
+    if (endpointChanged || authChanged) {
       this.ctx.storage.kv.put("server", server);
       for (const key of [
         "tokens", "oauthClient", "oauthDiscovery", "oauthVerifier", "pendingAuth",
@@ -296,10 +314,12 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
         this.ctx.storage.kv.delete(key);
       }
       this.ctx.storage.kv.put("expiredNotified", false);
-      this.log().info("portal repointed", {
-        event: "connect.repointed",
-        serverHost: hostOf(server.endpoint),
-      });
+      if (endpointChanged) {
+        this.log().info("portal repointed", {
+          event: "connect.repointed",
+          serverHost: hostOf(server.endpoint),
+        });
+      }
     }
 
     const log = this.log().with({
@@ -350,6 +370,13 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
         this.restoreSelection(initiationNonce);
         throw new Error(
           `The MCP server "${server.serverName}" rejected this deployment's configured token.`,
+          { cause: err });
+      }
+      if (!this.allowsOAuthFallback(server)) {
+        this.restoreSelection(initiationNonce);
+        throw new Error(
+          `The MCP server "${server.serverName}" requires authorization, but this connection is ` +
+          "configured for unauthenticated access.",
           { cause: err });
       }
       // The endpoint answered with an authorization challenge, so OAuth is now the observed auth
@@ -555,6 +582,12 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     const pending = this.ctx.storage.kv.get<PendingAuthorization>("pendingAuth");
     if (!pending) return false;
     const server = this.requireServer();
+    if (!this.allowsOAuthCallback(server)) {
+      this.ctx.storage.kv.delete("nonce");
+      this.ctx.storage.kv.delete("pendingAuth");
+      this.ctx.storage.kv.delete("oauthVerifier");
+      return false;
+    }
     // Single-use: consumed before the exchange, so a replayed callback cannot reach the token endpoint.
     this.ctx.storage.kv.delete("nonce");
     this.ctx.storage.kv.delete("pendingAuth");
