@@ -176,12 +176,18 @@ export class ActionStore {
     id: number,
     call: (fn: (client: McpClient) => Promise<McpToolCallResult>) => Promise<McpToolCallResult>,
     log: McpLog,
-  ): Promise<void | { outcome: "invalidated" }> {
+  ): Promise<void | { outcome: "invalidated"; reason: string }> {
     const stored = this.get(id);
     if (!stored) throw new Error(`MCP action ${id} is unknown.`);
     if (stored.state === "applied") return;
     if (stored.state === "rejected") throw new Error(`MCP action ${id} was already rejected.`);
     if (stored.state === "failed" && stored.retryable === false) {
+      if (stored.dispatched === false) {
+        return {
+          outcome: "invalidated",
+          reason: stored.error ?? "This MCP action became invalid before dispatch.",
+        };
+      }
       throw new Error(stored.error ?? `MCP action ${id} cannot be retried.`);
     }
     if (stored.state === "applying") {
@@ -214,7 +220,7 @@ export class ActionStore {
         log.warn("tool call invalidated before dispatch", {
           event: "action.apply.invalidated", actionId: id, toolName: stored.toolName, error: err,
         });
-        return { outcome: "invalidated" };
+        return { outcome: "invalidated", reason: err.message };
       }
       const mayHaveLanded = dispatched && callMayHaveTakenEffect(err);
       stored.state = "failed";

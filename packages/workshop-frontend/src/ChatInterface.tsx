@@ -6455,6 +6455,7 @@ function ChatInterface({
     const isPending = state === "pending";
     const isApproved = state === "approved";
     const isRejected = state === "rejected";
+    const isInvalidated = state === "invalidated";
     // A blocking (awaitDecision) pending action suspends the agent turn and blocks the composer, so
     // present it as a prominent callout with its details expanded by default.
     const isBlocking = isPending && log.description.awaitDecision === true;
@@ -6467,8 +6468,10 @@ function ChatInterface({
       ? "Approved"
       : isRejected
         ? "Denied"
-        : null;
-    const stateLabelCls = isRejected
+        : isInvalidated
+          ? "Invalidated"
+          : null;
+    const stateLabelCls = isRejected || isInvalidated
       ? "text-kumo-danger"
       : "text-kumo-inactive";
     // Auto-approval target: offer "Always approve this type" only when enabling a rule would
@@ -6619,6 +6622,9 @@ function ChatInterface({
             <div className={`chat-panel max-h-[200px] overflow-y-auto pr-1 ${styles.markdownContent}`}>
               <MarkdownMessage message={log.description.description} />
             </div>
+            {log.invalidationReason && (
+              <p className="text-kumo-danger">{log.invalidationReason}</p>
+            )}
             {resourceMeta}
           </div>
         )}

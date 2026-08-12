@@ -1221,7 +1221,8 @@ export interface CodeSubscriber {
 // * pending: Action has not been applied yet. It is waiting for approval.
 // * approved: Action was approved and applied.
 // * rejected: Action was rejected by the user.
-export type ActionState = "pending" | "approved" | "rejected";
+// * invalidated: Action was approved, but its policy or authority changed before dispatch.
+export type ActionState = "pending" | "approved" | "rejected" | "invalidated";
 
 export type ActionLogEntry = {
   // Sequential ID number for the action. Counts up from when the workspace was created.
@@ -1250,6 +1251,10 @@ export type ActionLogEntry = {
   // True when the action was applied automatically by an auto-approval rule rather than by a human
   // clicking Approve. Only ever set alongside state "approved" (there is no automatic rejection).
   autoApproved?: boolean;
+
+  // Why an approved action became invalid before it could be dispatched. Present only with state
+  // "invalidated".
+  invalidationReason?: string;
 } | {
   type: "observation";
   description: ObservationDescription;

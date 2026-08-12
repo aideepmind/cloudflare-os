@@ -53,7 +53,13 @@ describe("ActionStore", () => {
     const result = await store.apply(staged.id, async () => {
       throw new ActionInvalidatedError("Policy changed. Stage the call again.");
     }, log);
-    expect(result).toEqual({ outcome: "invalidated" });
+    expect(result).toEqual({
+      outcome: "invalidated",
+      reason: "Policy changed. Stage the call again.",
+    });
+    await expect(store.apply(staged.id, async () => {
+      throw new Error("must not dispatch again");
+    }, log)).resolves.toEqual(result);
 
     expect(store.get(staged.id)).toMatchObject({
       state: "failed",

@@ -697,13 +697,13 @@ export interface Gatekeeper<Session> extends DurableObject {
   // opportunity to retry or discard.
   //
   // If policy or authority changed after approval but before dispatch, return
-  // `{ outcome: "invalidated" }`. The Workshop records the action as rejected rather than offering
-  // a retry under the stale approval.
+  // `{ outcome: "invalidated", reason }`. The Workshop records that distinct terminal outcome
+  // rather than offering a retry under the stale approval.
   //
   // Depending on policy conditions, an action may be approved and applied automatically. However,
   // the gatekeeper is nevertheless expected to submit all actions for approval; there is no mode
   // in which it's OK to skip the check.
-  applyAction(action: number): Promise<void | { outcome: "invalidated" }>;
+  applyAction(action: number): Promise<void | { outcome: "invalidated"; reason: string }>;
 
   // Indicates that an action was rejected by the user. The gatekeeper should clean up any
   // associated storage.

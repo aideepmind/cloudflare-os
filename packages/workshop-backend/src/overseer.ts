@@ -439,8 +439,10 @@ export type ActionRecord = {
   appliedAt?: Date;
   action: number;  // action key assigned by the gatekeeper, passed back on apply/reject/revert
   description: ActionDescription;
-  resolvedBy?: AiChatAuthorInfo;  // set when resolved (approved/rejected); absent while pending (or legacy)
+  // Set when resolved (approved/rejected/invalidated); absent while pending or on legacy records.
+  resolvedBy?: AiChatAuthorInfo;
   autoApproved?: boolean;         // set when applied by an auto-approval rule rather than a human
+  invalidationReason?: string;
 } | {
   type: "observation";
   description: ObservationDescription;
@@ -643,6 +645,7 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
         description: record.description,
         resolvedBy: record.resolvedBy,
         autoApproved: record.autoApproved,
+        invalidationReason: record.invalidationReason,
       };
     case "bindHook":
       return {
@@ -2493,9 +2496,10 @@ class OverseerImpl implements AgentHooks {
     let gatekeeper = this.getGatekeeperFacet(record.gatekeeperId);
     let result = await gatekeeper.applyAction(record.action);
     if (result?.outcome === "invalidated") {
-      record.state = "rejected";
+      record.state = "invalidated";
+      record.appliedAt = new Date();
       record.resolvedBy = resolvedBy;
-      record.autoApproved = autoApproved;
+      record.invalidationReason = result.reason;
       this.storage.actions.put(record);
       return;
     }
@@ -7710,7 +7714,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // Only resume when every awaited action in the turn has been decided and all were approved.
     if (awaited.length === 0) return;                       // No awaited action in current turn.
     if (awaited.some(r => r.state === "pending")) return;   // Still waiting on a decision.
-    if (awaited.some(r => r.state === "rejected")) return;  // Denial leaves the turn ended.
+    if (awaited.some(r => r.state === "rejected" || r.state === "invalidated")) return;
 
     // Persist one note for replay; raw action cards are not surfaced to the LLM. Concurrent
     // approvals could both pass the gate above and append duplicate notes (the DO input gate is

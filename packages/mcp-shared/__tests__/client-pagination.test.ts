@@ -75,6 +75,27 @@ describe("McpClient.listTools", () => {
     expect(calls).toBe(2);
   });
 
+  it("does not impose a deadline when the caller did not configure one", async () => {
+    let now = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    vi.stubGlobal("fetch", async (_input: unknown, init?: RequestInit) => {
+      now += 60_000;
+      const request = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({
+        jsonrpc: "2.0",
+        id: request.id,
+        result: now === 60_000
+          ? { tools: [{ name: "a" }], nextCursor: "more" }
+          : { tools: [{ name: "b" }] },
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+
+    await expect(client.listTools(10)).resolves.toMatchObject({
+      tools: [{ name: "a" }, { name: "b" }],
+    });
+  });
+
   it("stops at maxTools even when the server has more", async () => {
     const calls = stubPages([{ tools: [{ name: "a" }, { name: "b" }, { name: "c" }], nextCursor: "1" }]);
     const client = new McpClient("https://mcp.example.com/mcp", async () => null);
@@ -191,10 +212,8 @@ describe("McpClient.listTools", () => {
     expect(truncated).toBe(false);
   });
 
-  it("can index far more tools than a catalog holds, by dropping text but not annotations", async () => {
+  it("can index far more tools than a catalog holds by retaining only names", async () => {
     // A catalog of these would exhaust the byte budget long before 400 tools. The index keeps the
-    // annotations because classification is decided from them, and a survey that could not say
-    // whether a tool is read-only would leave the configurator guessing at its own labels.
     stubPages([{ tools: Array.from({ length: 400 }, (_, i) => ({
       name: `server_tool_${i}`,
       description: "x".repeat(1000),
@@ -205,15 +224,7 @@ describe("McpClient.listTools", () => {
     const { tools, truncated } = await client.listMatchingToolIndex(500, () => true);
     expect(tools).toHaveLength(400);
     expect(truncated).toBe(false);
-    expect(tools[399]).toEqual({
-      name: "server_tool_399",
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: undefined,
-        idempotentHint: undefined,
-        openWorldHint: undefined,
-      },
-    });
+    expect(tools[399]).toEqual({ name: "server_tool_399" });
     // The point of the index: no description or schema survives to be stored or shown.
     expect(tools[0]).not.toHaveProperty("description");
     expect(tools[0]).not.toHaveProperty("inputSchema");
@@ -256,33 +267,6 @@ describe("McpClient.listTools", () => {
 
     expect(index.tools.map(tool => tool.name)).toEqual([...requested]);
     expect(calls()).toBe(1);
-  });
-
-  it("drops annotation fields it does not understand from an index entry", async () => {
-    // An entry's size is what makes a wide index affordable, so a server must not be able to attach
-    // unbounded text to a tool under `annotations` and have it retained.
-    stubPages([{ tools: [
-      { name: "a", annotations: { readOnlyHint: true, title: "z".repeat(10_000) } },
-    ] }]);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
-    const { tools: [entry] } = await client.listMatchingToolIndex(10, () => true);
-    expect(entry.annotations?.readOnlyHint).toBe(true);
-    expect(entry.annotations).not.toHaveProperty("title");
-  });
-
-  it("drops non-boolean annotation claims instead of retaining unbounded values", async () => {
-    stubPages([{ tools: [{
-      name: "a",
-      annotations: { readOnlyHint: { text: "x".repeat(10_000) }, destructiveHint: false },
-    }] }]);
-    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
-    const { tools: [entry] } = await client.listMatchingToolIndex(10, () => true);
-    expect(entry.annotations).toEqual({
-      readOnlyHint: undefined,
-      destructiveHint: false,
-      idempotentHint: undefined,
-      openWorldHint: undefined,
-    });
   });
 
   it("gives up on a server that paginates forever without returning tools", async () => {

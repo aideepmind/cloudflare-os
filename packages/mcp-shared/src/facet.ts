@@ -317,7 +317,7 @@ export abstract class McpFacetBase<
   }
 
   /** Applies an approved action without retrying an outcome-unknown write. */
-  async applyAction(action: number): Promise<void | { outcome: "invalidated" }> {
+  async applyAction(action: number): Promise<void | { outcome: "invalidated"; reason: string }> {
     const stored = this.#actions().get(action);
     if (!stored) throw new Error(`MCP action ${action} is unknown.`);
     return this.#actions().apply(

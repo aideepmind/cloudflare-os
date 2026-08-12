@@ -44,19 +44,16 @@ export type ToolCatalog = {
   truncated: boolean;
 };
 
-// One entry of a tool index: a tool's identity plus only the claims policy reads about it.
+// One entry of a tool index: just enough identity to validate a name against a large endpoint.
 //
 // Deliberately not an `McpTool`. An index is how a large aggregator is surveyed without paying for
 // every description and JSON Schema, so an entry has no `description` and no `inputSchema` and must
 // never be shown to an agent or rendered into an approval prompt as if it were a full definition.
-// It carries `annotations` because classification is the one question worth answering from an index:
-// see `classifyAnnotations`, which is all `classifyTool` consults for a tool's mode.
 export type IndexedTool = {
   name: string;
-  annotations?: McpToolAnnotations;
 };
 
-// A bounded survey of an endpoint's tools: identities and policy claims, without the bulk.
+// A bounded survey of an endpoint's tool identities, without the bulk.
 export type ToolIndex = {
   tools: IndexedTool[];
   truncated: boolean;
@@ -348,10 +345,9 @@ export function clampToolDefinition(tool: McpWireTool | McpTool): McpTool {
   };
 }
 
-// Reduces one tool to an index entry. Bounded by construction: a client-validated name plus at most
-// four booleans.
+// Reduces one tool to an index entry. Bounded by its already-validated name.
 function indexTool(tool: McpWireTool): IndexedTool {
-  return { name: tool.name, annotations: clampAnnotations(tool.annotations) };
+  return { name: tool.name };
 }
 
 /** Reduces one tool to the bounded, schema-free form returned by search. */
@@ -391,11 +387,9 @@ export class McpClient {
     this.#endpoint = endpoint;
     this.#getAuthorization = getAuthorization;
     this.sessionId = sessionId ?? null;
-    this.#fetchOptions = {
-      ...fetchOptions,
-      deadline: fetchOptions.deadline
-        ?? Date.now() + (fetchOptions.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS),
-    };
+    this.#fetchOptions = fetchOptions.timeoutMs !== undefined && fetchOptions.deadline === undefined
+      ? { ...fetchOptions, deadline: Date.now() + fetchOptions.timeoutMs }
+      : fetchOptions;
   }
 
   // The credential most recently sent, kept only so it can be recognised if it comes back. See

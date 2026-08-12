@@ -99,6 +99,9 @@ function activityStatus(
   if (record.state === 'rejected') {
     return { label: 'Denied', dotClass: 'bg-kumo-danger', textClass: 'text-kumo-danger' }
   }
+  if (record.state === 'invalidated') {
+    return { label: 'Invalidated', dotClass: 'bg-kumo-danger', textClass: 'text-kumo-danger' }
+  }
   return { label: 'Approved', dotClass: 'bg-kumo-success', textClass: 'text-kumo-subtle' }
 }
 
