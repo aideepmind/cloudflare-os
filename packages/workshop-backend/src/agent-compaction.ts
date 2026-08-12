@@ -25,6 +25,12 @@ const DEFAULT_CONTEXT_WINDOW = 128_000;
 // no SUGGESTED_MODELS entry to declare its reservation, so the provider's applies.
 export function getModelTokenLimits(config: AiModelConfig):
     {inputBudget: number, maxOutputTokens?: number} {
+  if (config.provider === "openai-compatible") {
+    return {
+      inputBudget: config.contextWindow! - config.outputLimit!,
+      maxOutputTokens: config.outputLimit,
+    };
+  }
   let model = SUGGESTED_MODELS[config.provider][config.model];
   let maxOutputTokens = model?.outputLimit ??
       (config.provider === "cloudflare" ? WORKERS_AI_OUTPUT_LIMIT : undefined);
