@@ -133,12 +133,13 @@ describe("parsePortalServers", () => {
     // The heading and the trailing instruction are not bullet lines, and the instruction names a
     // portal tool, so neither may become a server. Each display name pairs with the id that
     // prefixes that server's tools, which is what a grant actually matches on.
-    const servers = parsePortalServers(REAL_PORTAL_REPLY);
-    expect(servers).toEqual([
+    const listing = parsePortalServers(REAL_PORTAL_REPLY);
+    expect(listing).toEqual({ complete: true, servers: [
       { id: "test", name: "Cloudflare documentation", enabled: true },
       { id: "linear", name: "Linear", enabled: true },
-    ]);
-    expect(toolBelongsToServer("test_search_cloudflare_documentation", servers[0].id)).toBe(true);
+    ] });
+    expect(toolBelongsToServer(
+      "test_search_cloudflare_documentation", listing.servers[0].id)).toBe(true);
   });
 
   it("reports a disabled server, and shows one whose wording it cannot read", () => {
@@ -149,21 +150,39 @@ describe("parsePortalServers", () => {
         text: "- Linear (linear): \u2713 enabled\n- GitHub (github): \u2717 disabled"
           + "\n- Jira (jira): active",
       }],
-    })).toEqual([
+    })).toEqual({ complete: true, servers: [
       { id: "linear", name: "Linear", enabled: true },
       { id: "github", name: "GitHub", enabled: false },
       { id: "jira", name: "Jira", enabled: true },
-    ]);
+    ] });
   });
 
-  it("reads structuredContent, and returns nothing rather than throwing otherwise", () => {
-    // Not a failure: `reconcilePortalServers` then names each group by the id from its tool prefixes.
+  it("reads structuredContent and distinguishes complete empty from unrecognized", () => {
     expect(parsePortalServers({
       structuredContent: [{ id: "gh", name: "GitHub", enabled: false }],
-    })).toEqual([{ id: "gh", name: "GitHub", enabled: false }]);
-    expect(parsePortalServers({})).toEqual([]);
-    expect(parsePortalServers({ content: [{ type: "text", text: "no servers today" }] })).toEqual([]);
-    expect(parsePortalServers({ structuredContent: "a string" })).toEqual([]);
+    })).toEqual({
+      complete: true,
+      servers: [{ id: "gh", name: "GitHub", enabled: false }],
+    });
+    expect(parsePortalServers({ structuredContent: [] }))
+      .toEqual({ complete: true, servers: [] });
+    expect(parsePortalServers({})).toEqual({ complete: false, servers: [] });
+    expect(parsePortalServers({ content: [{ type: "text", text: "no servers today" }] }))
+      .toEqual({ complete: false, servers: [] });
+    expect(parsePortalServers({ structuredContent: "a string" }))
+      .toEqual({ complete: false, servers: [] });
+  });
+
+  it("marks a partially malformed server list incomplete", () => {
+    expect(parsePortalServers({
+      content: [{
+        type: "text",
+        text: "Available MCP Servers:\n- Linear (linear): enabled\n- malformed",
+      }],
+    })).toEqual({
+      complete: false,
+      servers: [{ id: "linear", name: "Linear", enabled: true }],
+    });
   });
 });
 

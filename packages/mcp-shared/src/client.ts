@@ -43,16 +43,17 @@ export type ToolCatalog = {
   truncated: boolean;
 };
 
-// One entry of a tool index: just enough identity to validate a name against a large endpoint.
+// One entry of a tool index: a tool's identity plus only the claims portal policy reads about it.
 //
 // Deliberately not an `McpTool`. An index is how a large aggregator is surveyed without paying for
 // every description and JSON Schema, so an entry has no `description` and no `inputSchema` and must
 // never be shown to an agent or rendered into an approval prompt as if it were a full definition.
 export type IndexedTool = {
   name: string;
+  annotations?: McpToolAnnotations;
 };
 
-// A bounded survey of an endpoint's tool identities, without the bulk.
+// A bounded survey of an endpoint's identities and policy claims, without the bulk.
 export type ToolIndex = {
   tools: IndexedTool[];
   truncated: boolean;
@@ -344,9 +345,9 @@ export function clampToolDefinition(tool: McpWireTool | McpTool): McpTool {
   };
 }
 
-// Reduces one tool to an index entry. Bounded by its already-validated name.
+// Reduces one tool to a bounded name plus the four boolean claims portal classification consumes.
 function indexTool(tool: McpWireTool): IndexedTool {
-  return { name: tool.name };
+  return { name: tool.name, annotations: clampAnnotations(tool.annotations) };
 }
 
 /** Reduces one tool to the bounded, schema-free form returned by search. */

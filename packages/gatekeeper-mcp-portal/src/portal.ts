@@ -52,6 +52,7 @@ import {
   reconcilePortalServers,
   toolBelongsToServer,
   type PortalServer,
+  type PortalServerListing,
 } from "@gadgets/mcp-shared/portal";
 import {
   endpointOfResourceUrl,
@@ -124,7 +125,7 @@ async function listPortalServers(
   env: Env,
   account: DurableObjectStub<McpAccount>,
   endpoint: string,
-): Promise<PortalServer[]> {
+): Promise<PortalServerListing> {
   const result = await withClient(env, account, endpoint,
     client => client.callTool(PORTAL_LIST_SERVERS_TOOL, {}));
   if (result.isError) throw new Error("The portal could not list its upstream servers.");
@@ -135,7 +136,7 @@ async function tryListPortalServers(
   env: Env,
   account: DurableObjectStub<McpAccount>,
   endpoint: string,
-): Promise<PortalServer[] | null> {
+): Promise<PortalServerListing | null> {
   try {
     return await listPortalServers(env, account, endpoint);
   } catch (err) {
@@ -425,7 +426,7 @@ export class GatekeeperUserImpl
         throw new Error("The configured MCP endpoint does not expose the portal server-list tool.");
       }
     }
-    const portalServers = listedServers ?? [];
+    const portalServers = listedServers?.servers ?? [];
 
     // Fetch only the names validation still needs. Named grants prove each selected name. A reported
     // server needs no catalog scan; an unreported server needs one prefixed tool as fallback evidence.
@@ -565,24 +566,25 @@ class McpServerConfiguratorUI extends RpcTarget implements McpServerConfigurator
       index.tools, { truncated: index.truncated, cap: MAX_PORTAL_TOOL_INDEX })) return [];
     const server = await this.#server();
     const reported = await tryListPortalServers(this.#env, this.#account, server.endpoint);
-    if (reported === null && index.truncated) {
+    if (index.truncated && (reported === null || !reported.complete)) {
       throw new Error("Could not retrieve the portal's complete server list. Try again.");
     }
 
     const grouped = groupToolsByServer(index.tools);
-    return reconcilePortalServers(reported ?? [], index.tools, index.truncated).map(upstream => {
-      const count = grouped.get(upstream.id)?.length ?? 0;
-      return {
-        value: upstream.id,
-        title: upstream.name,
-        subtitle: index.truncated
-          ? `${count} tool${count === 1 ? "" : "s"} shown`
-          : `${count} tool${count === 1 ? "" : "s"}`,
-        // A server can be configured but switched off for this session, making a grant onto it valid
-        // but presently empty, which the person choosing should see.
-        meta: upstream.enabled ? undefined : "disabled in portal",
-      };
-    });
+    return reconcilePortalServers(reported?.servers ?? [], index.tools, index.truncated)
+      .map(upstream => {
+        const count = grouped.get(upstream.id)?.length ?? 0;
+        return {
+          value: upstream.id,
+          title: upstream.name,
+          subtitle: index.truncated
+            ? `${count} tool${count === 1 ? "" : "s"} shown`
+            : `${count} tool${count === 1 ? "" : "s"}`,
+          // A server can be configured but switched off for this session, making a grant onto it
+          // valid but presently empty, which the person choosing should see.
+          meta: upstream.enabled ? undefined : "disabled in portal",
+        };
+      });
   }
 
   // Tools the grant may cover within one portal upstream server. The survey is checked before the

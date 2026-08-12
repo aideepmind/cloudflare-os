@@ -212,8 +212,9 @@ describe("McpClient.listTools", () => {
     expect(truncated).toBe(false);
   });
 
-  it("can index far more tools than a catalog holds by retaining only names", async () => {
+  it("can index far more tools than a catalog holds with bounded policy claims", async () => {
     // A catalog of these would exhaust the byte budget long before 400 tools. The index keeps the
+    // four boolean annotations the portal picker uses, but drops descriptions and schemas.
     stubPages([{ tools: Array.from({ length: 400 }, (_, i) => ({
       name: `server_tool_${i}`,
       description: "x".repeat(1000),
@@ -224,7 +225,15 @@ describe("McpClient.listTools", () => {
     const { tools, truncated } = await client.listToolIndex(500);
     expect(tools).toHaveLength(400);
     expect(truncated).toBe(false);
-    expect(tools[399]).toEqual({ name: "server_tool_399" });
+    expect(tools[399]).toEqual({
+      name: "server_tool_399",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: undefined,
+        idempotentHint: undefined,
+        openWorldHint: undefined,
+      },
+    });
     // The point of the index: no description or schema survives to be stored or shown.
     expect(tools[0]).not.toHaveProperty("description");
     expect(tools[0]).not.toHaveProperty("inputSchema");
@@ -267,6 +276,25 @@ describe("McpClient.listTools", () => {
 
     expect(index.tools.map(tool => tool.name)).toEqual([...requested]);
     expect(calls()).toBe(1);
+  });
+
+  it("drops unknown and non-boolean annotation claims from index entries", async () => {
+    stubPages([{ tools: [{
+      name: "a",
+      annotations: {
+        readOnlyHint: { text: "x".repeat(10_000) },
+        destructiveHint: false,
+        title: "z".repeat(10_000),
+      },
+    }] }]);
+    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+    const { tools: [entry] } = await client.listToolIndex(10);
+    expect(entry.annotations).toEqual({
+      readOnlyHint: undefined,
+      destructiveHint: false,
+      idempotentHint: undefined,
+      openWorldHint: undefined,
+    });
   });
 
   it("gives up on a server that paginates forever without returning tools", async () => {
