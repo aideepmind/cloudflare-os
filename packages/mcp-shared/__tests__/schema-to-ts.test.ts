@@ -304,6 +304,7 @@ describe("generateSessionTypes", { timeout: 15_000 }, () => {
     ]);
     expect(output).toContain("recorded as an observation");
     expect(output).toContain("queued for approval");
+    expect(output).toContain("return from that executeCode call");
     expect(output).toContain("supplied by the user, so no action is ever applied automatically");
   });
 

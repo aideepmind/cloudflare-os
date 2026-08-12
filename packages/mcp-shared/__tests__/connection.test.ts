@@ -169,3 +169,19 @@ it("keeps a successful result when only post-call session persistence loses a ra
 
   expect(methods).toEqual(["DELETE"]);
 });
+
+it("keeps a successful result when post-call session persistence fails", async () => {
+  const account: ConnectionAccount = {
+    async getConnection() {
+      return { authorization: "token", sessionId: "old-session", generation: 1 };
+    },
+    async assertConnectionCurrent() {},
+    async setMcpSessionId() { throw new Error("storage unavailable"); },
+    async noteCredentialsExpired() {},
+  };
+
+  await expect(withClient({}, account, "https://mcp.example.com", async client => {
+    client.sessionId = "rotated-session";
+    return "completed";
+  }, { retryOnExpiry: false })).resolves.toBe("completed");
+});

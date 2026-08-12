@@ -288,7 +288,7 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
     const generation = this.advanceConnectionGeneration();
     if (existing) this.ctx.storage.kv.delete("mcpSessionId");
     const endpointChanged = existing !== undefined && existing.endpoint !== server.endpoint;
-    if (existing && endpointChanged) {
+    if (endpointChanged) {
       this.ctx.storage.kv.put("server", server);
       for (const key of [
         "tokens", "oauthClient", "oauthDiscovery", "oauthVerifier", "pendingAuth",

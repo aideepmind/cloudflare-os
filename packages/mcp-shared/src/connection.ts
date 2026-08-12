@@ -79,7 +79,7 @@ export async function withClient<T>(
   env: ConnectionEnv,
   account: ConnectionAccount,
   endpoint: string,
-  fn: (client: McpClient, connection: McpConnection) => Promise<T>,
+  fn: (client: McpClient) => Promise<T>,
   options: WithClientOptions = {},
 ): Promise<T> {
   // Read once for the whole operation. The account refreshes a token a minute before expiry, so one
@@ -105,8 +105,14 @@ export async function withClient<T>(
 
   const persistSession = async (required: boolean): Promise<void> => {
     if (client.sessionId === persistedSessionId) return;
-    const accepted = await account.setMcpSessionId(
-      endpoint, generation, persistedSessionId, client.sessionId);
+    let accepted: boolean;
+    try {
+      accepted = await account.setMcpSessionId(
+        endpoint, generation, persistedSessionId, client.sessionId);
+    } catch (err) {
+      if (required) throw err;
+      return;
+    }
     if (!accepted) {
       await client.closeSession().catch(() => undefined);
       if (required) {
@@ -124,7 +130,7 @@ export async function withClient<T>(
   };
 
   const run = async (): Promise<T> => {
-    const result = await fn(client, connection);
+    const result = await fn(client);
     // The requested operation already completed. Losing only the transport-session CAS must not
     // turn a successful write into a retryable failure and send it a second time.
     await persistSession(false);
