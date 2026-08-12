@@ -943,11 +943,11 @@ export type CloudflareAccountOption = {
   accountName: string;
 };
 
-// Supported AI providers. "openai-compatible" names the Chat Completions protocol, not a vendor.
+/** Supported AI providers. "openai-compatible" names the Chat Completions protocol, not a vendor. */
 export type AiModelProvider =
     "openai" | "anthropic" | "google" | "cloudflare" | "ollama" | "openai-compatible";
 
-// Information about the AI gateway configuration. Returned by `AuthenticatedApi.getAiConfig()`.
+/** Information about the AI gateway configuration. Returned by `AuthenticatedApi.getAiConfig()`. */
 export type AiGatewayInfo = {
   enabled: true;
   enabledProviders: AiModelProvider[];
@@ -955,7 +955,7 @@ export type AiGatewayInfo = {
   enabled: false;
 };
 
-// Configuration specifying how to connect to an AI model provider.
+/** Configuration specifying how to connect to an AI model provider. */
 export type AiModelConfig = {
   // Which AI provider hosts the model?
   provider: AiModelProvider;
@@ -985,13 +985,19 @@ export type AiModelConfig = {
   compatibilityProfile?: "conservative";
 };
 
-// Workers AI adds the response cap to the prompt and rejects a request whose total exceeds the
-// model's window, so every Cloudflare model reserves this much of it for the response.
+/** Largest custom context window accepted for compaction and inference. */
+export const MAX_CUSTOM_MODEL_CONTEXT_WINDOW = 2_000_000;
+
+/**
+ * Workers AI adds the response cap to the prompt, so every Cloudflare model reserves this much of
+ * its context window for the response.
+ */
 export const WORKERS_AI_OUTPUT_LIMIT = 32768;
 
-// Models offered in the picker. `contextWindow` is the maximum tokens one request may total.
-// `outputLimit`, when present, is both the requested response cap and the space reserved for it,
-// leaving the remainder as the prompt budget context compaction sizes against.
+/**
+ * Models offered in the picker. `contextWindow` is the maximum tokens one request may total;
+ * `outputLimit` is both the response cap and the space compaction reserves for it.
+ */
 export const SUGGESTED_MODELS: Record<
   AiModelProvider,
   Record<string, {name: string, contextWindow: number, outputLimit?: number}>
