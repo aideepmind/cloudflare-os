@@ -99,6 +99,7 @@ const VENDOR_ID = "mcp_portal";
 // above it so that a portal fronting an implausible number of tools still terminates in bounded work
 // rather than depending on the byte budget to stop it, and either cut is reported as `truncated`.
 const MAX_PORTAL_TOOL_INDEX = 1000;
+const MAX_CONFIGURATOR_TOOL_CATALOGS = 4;
 
 const logger = createLogger<McpLogFields>({
   component: "gatekeeper.mcp-portal", vendorId: VENDOR_ID,
@@ -247,6 +248,10 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
 // The endpoint is a deployment setting rather than user input, so the preissued token is the only
 // real addition: a portal may be fronted by one instead of using OAuth.
 export class McpAccount extends McpAccountBase<Env> {
+  // Object identity prevents a losing duplicate connect request from clearing the winning request's
+  // same-revision guard when Durable Object requests interleave at the digest or portal probe.
+  #connectingRevision: { value: string } | undefined;
+
   protected baseUrl(): string {
     return getBaseUrl(this.env);
   }
@@ -288,18 +293,32 @@ export class McpAccount extends McpAccountBase<Env> {
     initiationNonce: string,
     target: ConnectedServer | null,
   ): Promise<ConnectOutcome> {
-    const outcome = await super.beginConnect(initiationNonce, target);
-    if (outcome.kind === "done") {
-      const config = readPortalConfig(this.env);
-      const server = this.server();
-      if (config && server && sameEndpoint(config.endpoint, server.endpoint)) {
-        this.ctx.storage.kv.put(
-          "portalConfigRevision",
-          await this.#configurationRevision(config),
-        );
+    const config = readPortalConfig(this.env);
+    const revision = config && this.awaitingSelection(initiationNonce)
+      ? await this.#configurationRevision(config)
+      : undefined;
+    const attempt = revision !== undefined && this.#connectingRevision === undefined
+      ? { value: revision }
+      : undefined;
+    if (attempt) this.#connectingRevision = attempt;
+    try {
+      const outcome = await super.beginConnect(initiationNonce, target);
+      if (outcome.kind === "done") {
+        const current = readPortalConfig(this.env);
+        const server = this.server();
+        if (current && server && sameEndpoint(current.endpoint, server.endpoint)) {
+          this.ctx.storage.kv.put(
+            "portalConfigRevision",
+            await this.#configurationRevision(current),
+          );
+        }
+      }
+      return outcome;
+    } finally {
+      if (this.#connectingRevision === attempt) {
+        this.#connectingRevision = undefined;
       }
     }
-    return outcome;
   }
 
   override async getConnection(endpoint: string): Promise<McpConnection> {
@@ -311,13 +330,16 @@ export class McpAccount extends McpAccountBase<Env> {
     }
     const revision = await this.#configurationRevision(config);
     const previous = this.ctx.storage.kv.get<string>("portalConfigRevision");
+    const reconnectingToCurrentRevision = this.#connectingRevision?.value === revision;
     if (previous === undefined) {
       // Existing token accounts predate the revision marker. Their cached session may have been
       // minted under a different configured token, so invalidate it once before establishing the
       // current revision as the baseline. New connects record the revision in `beginConnect()`.
-      if (server.auth === "token") this.invalidateConnectionState();
-      this.ctx.storage.kv.put("portalConfigRevision", revision);
-    } else if (previous !== revision) {
+      if (!reconnectingToCurrentRevision) {
+        if (server.auth === "token") this.invalidateConnectionState();
+        this.ctx.storage.kv.put("portalConfigRevision", revision);
+      }
+    } else if (previous !== revision && !reconnectingToCurrentRevision) {
       this.invalidateConnectionState();
       this.ctx.storage.kv.put("portalConfigRevision", revision);
     }
@@ -473,7 +495,8 @@ class McpServerConfiguratorUI extends RpcTarget implements McpServerConfigurator
   #account: DurableObjectStub<McpAccount>;
   #serverPromise: Promise<ConnectedServer> | undefined;
   #toolIndexPromise: Promise<ToolIndex> | undefined;
-  #toolsPromise: { serverId: string; catalog: Promise<ToolCatalog> } | undefined;
+  #toolCatalogs = new Map<string, Promise<ToolCatalog>>();
+  #activeToolLoads = 0;
 
   constructor(env: Env, account: DurableObjectStub<McpAccount>) {
     super();
@@ -500,22 +523,37 @@ class McpServerConfiguratorUI extends RpcTarget implements McpServerConfigurator
     return this.#toolIndexPromise;
   }
 
-  // Retains only the currently selected server's detailed catalog. The form selects one server, so
-  // keeping every previous 96 KiB catalog would spend memory on state the UI no longer displays.
+  // Coalesces repeated selections while bounding both concurrent portal scans and retained detail.
   #tools(serverId: string): Promise<ToolCatalog> {
-    if (this.#toolsPromise?.serverId !== serverId) {
-      const catalog = (async () => {
-        const server = await this.#server();
-        return fetchTools(
-          this.#env,
-          this.#account,
-          server.endpoint,
-          tool => toolBelongsToServer(tool.name, serverId),
-        );
-      })();
-      this.#toolsPromise = { serverId, catalog };
+    const existing = this.#toolCatalogs.get(serverId);
+    if (existing) {
+      this.#toolCatalogs.delete(serverId);
+      this.#toolCatalogs.set(serverId, existing);
+      return existing;
     }
-    return this.#toolsPromise.catalog;
+    if (this.#activeToolLoads >= MAX_CONFIGURATOR_TOOL_CATALOGS) {
+      throw new Error("Too many portal server catalogs are already loading. Try again shortly.");
+    }
+    this.#activeToolLoads++;
+    const catalog = (async () => {
+      const server = await this.#server();
+      return fetchTools(
+        this.#env,
+        this.#account,
+        server.endpoint,
+        tool => toolBelongsToServer(tool.name, serverId),
+      );
+    })().finally(() => {
+      this.#activeToolLoads--;
+    });
+    this.#toolCatalogs.set(serverId, catalog);
+    while (this.#toolCatalogs.size > MAX_CONFIGURATOR_TOOL_CATALOGS) {
+      this.#toolCatalogs.delete(this.#toolCatalogs.keys().next().value!);
+    }
+    void catalog.catch(() => {
+      if (this.#toolCatalogs.get(serverId) === catalog) this.#toolCatalogs.delete(serverId);
+    });
+    return catalog;
   }
 
   // Ask the portal for its server index without first loading every upstream tool. Empty for an
@@ -526,11 +564,13 @@ class McpServerConfiguratorUI extends RpcTarget implements McpServerConfigurator
     if (!looksLikePortal(
       index.tools, { truncated: index.truncated, cap: MAX_PORTAL_TOOL_INDEX })) return [];
     const server = await this.#server();
-    const reported = await tryListPortalServers(
-      this.#env, this.#account, server.endpoint) ?? [];
+    const reported = await tryListPortalServers(this.#env, this.#account, server.endpoint);
+    if (reported === null && index.truncated) {
+      throw new Error("Could not retrieve the portal's complete server list. Try again.");
+    }
 
     const grouped = groupToolsByServer(index.tools);
-    return reconcilePortalServers(reported, index.tools, index.truncated).map(upstream => {
+    return reconcilePortalServers(reported ?? [], index.tools, index.truncated).map(upstream => {
       const count = grouped.get(upstream.id)?.length ?? 0;
       return {
         value: upstream.id,
