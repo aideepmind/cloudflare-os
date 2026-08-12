@@ -35,7 +35,7 @@ import { generateSessionTypes, sessionTypeName } from "@gadgets/mcp-shared/schem
 import { McpAccountBase, type ConnectedServer, type ConnectOutcome }
   from "@gadgets/mcp-shared/account";
 import { generateNonce } from "@gadgets/mcp-shared/connect-nonce";
-import { fetchToolIndex, fetchTools, type ConnectionAccount } from "@gadgets/mcp-shared/connection";
+import { fetchTools, withClient, type ConnectionAccount } from "@gadgets/mcp-shared/connection";
 import { McpSessionBase } from "@gadgets/mcp-shared/session";
 import { McpFacetBase } from "@gadgets/mcp-shared/facet";
 import { looksLikePortal } from "@gadgets/mcp-shared/portal";
@@ -284,12 +284,14 @@ export class GatekeeperUserImpl
         scope,
         selected.size === 0
           ? { tools: [], truncated: false }
-          : await fetchToolIndex(
+          : await withClient(
             this.env,
             this.#account(),
             server.endpoint,
-            selected.size,
-            tool => selected.has(tool.name),
+            client => client.listMatchingToolIndex(
+              selected.size,
+              tool => selected.has(tool.name),
+            ),
           ),
       );
     }

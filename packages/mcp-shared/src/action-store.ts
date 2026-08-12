@@ -54,7 +54,7 @@ export const APPLY_OUTCOME_UNKNOWN_MESSAGE =
 
 /** The approved tool or account policy changed before dispatch, so the action must be restaged. */
 export class ActionInvalidatedError extends Error {
-  readonly errorCode = ACTION_INVALIDATED_ERROR_CODE;
+  readonly code = ACTION_INVALIDATED_ERROR_CODE;
 
   constructor(message: string) {
     super(message);

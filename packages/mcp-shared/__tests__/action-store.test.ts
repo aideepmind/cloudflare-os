@@ -56,7 +56,7 @@ describe("ActionStore", () => {
     }, log).catch(err => err);
     expect(error).toMatchObject({
       message: "Policy changed. Stage the call again.",
-      errorCode: ACTION_INVALIDATED_ERROR_CODE,
+      code: ACTION_INVALIDATED_ERROR_CODE,
     });
 
     expect(store.get(staged.id)).toMatchObject({

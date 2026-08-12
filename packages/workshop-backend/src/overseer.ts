@@ -2494,7 +2494,7 @@ class OverseerImpl implements AgentHooks {
     try {
       await gatekeeper.applyAction(record.action);
     } catch (error) {
-      if ((error as { errorCode?: unknown })?.errorCode !== ACTION_INVALIDATED_ERROR_CODE) throw error;
+      if ((error as { code?: unknown })?.code !== ACTION_INVALIDATED_ERROR_CODE) throw error;
       record.state = "rejected";
       record.resolvedBy = resolvedBy;
       record.autoApproved = autoApproved;
