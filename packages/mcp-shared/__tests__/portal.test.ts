@@ -175,10 +175,11 @@ describe("parsePortalServers", () => {
 
   it("marks a partially malformed server list incomplete", () => {
     expect(parsePortalServers({
-      content: [{
-        type: "text",
-        text: "Available MCP Servers:\n- Linear (linear): enabled\n- malformed",
-      }],
+      content: [
+        { type: "text", text: "Available MCP Servers:" },
+        { type: "text", text: "- Linear (linear): enabled" },
+        { type: "text", text: "- malformed" },
+      ],
     })).toEqual({
       complete: false,
       servers: [{ id: "linear", name: "Linear", enabled: true }],

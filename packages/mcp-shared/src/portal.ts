@@ -226,10 +226,14 @@ export function parsePortalServers(
   const structured = parseStructured(result.structuredContent);
   if (structured) return structured;
 
-  for (const block of Array.isArray(result.content) ? result.content : []) {
-    const { type, text } = (block ?? {}) as { type?: unknown; text?: unknown };
-    if (type !== "text" || typeof text !== "string") continue;
-    const listing = parseServerLines(text);
+  const combinedText = (Array.isArray(result.content) ? result.content : [])
+    .flatMap(block => {
+      const { type, text: blockText } = (block ?? {}) as { type?: unknown; text?: unknown };
+      return type === "text" && typeof blockText === "string" ? [blockText] : [];
+    })
+    .join("\n");
+  if (combinedText) {
+    const listing = parseServerLines(combinedText);
     if (listing.recognized) return { servers: listing.servers, complete: listing.complete };
   }
   return { servers: [], complete: false };

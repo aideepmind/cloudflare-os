@@ -51,7 +51,6 @@ import {
   PORTAL_LIST_SERVERS_TOOL,
   reconcilePortalServers,
   toolBelongsToServer,
-  type PortalServer,
   type PortalServerListing,
 } from "@gadgets/mcp-shared/portal";
 import {
@@ -249,9 +248,9 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
 // The endpoint is a deployment setting rather than user input, so the preissued token is the only
 // real addition: a portal may be fronted by one instead of using OAuth.
 export class McpAccount extends McpAccountBase<Env> {
-  // Object identity prevents a losing duplicate connect request from clearing the winning request's
-  // same-revision guard when Durable Object requests interleave at the digest or portal probe.
-  #connectingRevision: { value: string } | undefined;
+  // Counts in-flight attempts per revision. Separate Durable Object requests can overlap at the
+  // digest and portal probe, so one losing or older attempt must not clear a newer attempt's guard.
+  #connectingRevisions = new Map<string, number>();
 
   protected baseUrl(): string {
     return getBaseUrl(this.env);
@@ -298,10 +297,10 @@ export class McpAccount extends McpAccountBase<Env> {
     const revision = config && this.awaitingSelection(initiationNonce)
       ? await this.#configurationRevision(config)
       : undefined;
-    const attempt = revision !== undefined && this.#connectingRevision === undefined
-      ? { value: revision }
-      : undefined;
-    if (attempt) this.#connectingRevision = attempt;
+    if (revision !== undefined) {
+      this.#connectingRevisions.set(
+        revision, (this.#connectingRevisions.get(revision) ?? 0) + 1);
+    }
     try {
       const outcome = await super.beginConnect(initiationNonce, target);
       if (outcome.kind === "done") {
@@ -316,8 +315,10 @@ export class McpAccount extends McpAccountBase<Env> {
       }
       return outcome;
     } finally {
-      if (this.#connectingRevision === attempt) {
-        this.#connectingRevision = undefined;
+      if (revision !== undefined) {
+        const remaining = (this.#connectingRevisions.get(revision) ?? 1) - 1;
+        if (remaining === 0) this.#connectingRevisions.delete(revision);
+        else this.#connectingRevisions.set(revision, remaining);
       }
     }
   }
@@ -331,7 +332,7 @@ export class McpAccount extends McpAccountBase<Env> {
     }
     const revision = await this.#configurationRevision(config);
     const previous = this.ctx.storage.kv.get<string>("portalConfigRevision");
-    const reconnectingToCurrentRevision = this.#connectingRevision?.value === revision;
+    const reconnectingToCurrentRevision = this.#connectingRevisions.has(revision);
     if (previous === undefined) {
       // Existing token accounts predate the revision marker. Their cached session may have been
       // minted under a different configured token, so invalidate it once before establishing the
