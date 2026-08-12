@@ -15,7 +15,6 @@
 
 import {
   guardedFetch,
-  DEFAULT_REQUEST_TIMEOUT_MS,
   FetchNotStartedError,
   MAX_RESPONSE_BYTES,
   readTextCapped,

@@ -5822,32 +5822,6 @@ function ChatInterface({
     return changed;
   };
 
-  const applyOptimisticActionState = (actionId: number, state: "approved" | "rejected"): boolean => {
-    let changed = false;
-    const locations = cacheRef.current.actionMessages.get(actionId);
-    if (!locations) return false;
-
-    for (const [key, location] of locations) {
-      const messages = cacheRef.current.messages.get(location.chatId);
-      const msg = messages?.[location.sequence];
-      if (msg?.type !== "action" || msg.actionId !== actionId || !msg.actionLog) {
-        locations.delete(key);
-        continue;
-      }
-
-      const nextMessages = [...messages!];
-      nextMessages[location.sequence] = {
-        ...msg,
-        actionLog: { ...msg.actionLog, state, appliedAt: new Date() },
-      };
-      cacheRef.current.messages.set(location.chatId, nextMessages);
-      changed = true;
-    }
-
-    if (locations.size === 0) cacheRef.current.actionMessages.delete(actionId);
-    return changed;
-  };
-
   const applyOptimisticHookEnabled = (actionId: number, enabled: boolean): boolean => {
     let changed = false;
     const locations = cacheRef.current.actionMessages.get(actionId);
@@ -5899,9 +5873,7 @@ function ChatInterface({
   const { alwaysApproveTag, isTagAutoApproved } =
     useAlwaysApproveTag(overseer, setProcessingActions, onAutoApproveChange);
 
-  const resolveAction = useResolveAction(overseer, setProcessingActions, (actionId, state) => {
-    if (applyOptimisticActionState(actionId, state)) forceUpdate();
-  });
+  const resolveAction = useResolveAction(overseer, setProcessingActions);
 
   // Handle enabling/disabling a bound hook from the chat thread.
   const handleToggleHook = async (actionId: number, hookId: number, enabled: boolean) => {

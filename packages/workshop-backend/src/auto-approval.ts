@@ -20,7 +20,7 @@ export interface AutoApprovalStorage {
 export type ApplyPendingActionFn = (
     record: ActionRecord & {type: "action"},
     resolvedBy: AiChatAuthorInfo,
-    autoApproved: boolean) => Promise<void>;
+    autoApproved: boolean) => Promise<"approved" | "invalidated">;
 
 export class AutoApprovalDrainer {
   // Per-gatekeeper single-flight state. Key present => a drain is running for that gatekeeper; the
@@ -82,7 +82,8 @@ export class AutoApprovalDrainer {
       try {
         // Attribute the auto-approval to the user who enabled the rule -- it runs under their
         // authority.
-        await this.applyPendingAction(fresh, rule.enabledBy, true);
+        const outcome = await this.applyPendingAction(fresh, rule.enabledBy, true);
+        if (outcome === "invalidated") break;
       } catch (err) {
         // Leave the action pending for manual handling and stop the drain (never skip ahead).
         logger.error("auto-approval failed", {

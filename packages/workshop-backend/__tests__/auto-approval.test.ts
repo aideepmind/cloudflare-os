@@ -66,6 +66,7 @@ function makeImmediateApply(storage: AutoApprovalStorage) {
       fresh.autoApproved = autoApproved;
       storage.actions.put(fresh);
     }
+    return "approved";
   };
   return { applyFn, calls };
 }
@@ -78,7 +79,7 @@ function makeControlledApply(storage: AutoApprovalStorage) {
   let gates: Array<() => void> = [];
   let applyFn: ApplyPendingActionFn = (record, resolvedBy, autoApproved) => {
     calls.push(record.id);
-    return new Promise<void>((resolve) => {
+    return new Promise<"approved">((resolve) => {
       gates.push(() => {
         let fresh = storage.actions.get(record.id);
         if (fresh && fresh.type === "action") {
@@ -88,7 +89,7 @@ function makeControlledApply(storage: AutoApprovalStorage) {
           fresh.autoApproved = autoApproved;
           storage.actions.put(fresh);
         }
-        resolve();
+        resolve("approved");
       });
     });
   };
@@ -154,6 +155,25 @@ describe("AutoApprovalDrainer.drain", () => {
 
     expect(calls).toEqual([1, 3]);
     expect(getAction(storage, 3).state).toBe("approved");
+  });
+
+  it("stops when an eligible action is invalidated", async () => {
+    let storage = makeStorage();
+    enableRule(storage);
+    putAction(storage, 1);
+    putAction(storage, 2);
+    const calls: number[] = [];
+    const apply: ApplyPendingActionFn = async record => {
+      calls.push(record.id);
+      record.state = "invalidated";
+      storage.actions.put(record);
+      return "invalidated";
+    };
+
+    await new AutoApprovalDrainer(storage, apply).drain(GK);
+
+    expect(calls).toEqual([1]);
+    expect(getAction(storage, 2).state).toBe("pending");
   });
 
   // Two concurrent drains for the same gatekeeper must not double-apply. The input gate is open

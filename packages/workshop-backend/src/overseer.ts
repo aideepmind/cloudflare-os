@@ -2492,7 +2492,8 @@ class OverseerImpl implements AgentHooks {
   // requiring them here guarantees the audit log always records the resolving user and whether it
   // was applied automatically. For an auto-approval, `resolvedBy` is the user who enabled the rule.
   async applyPendingAction(record: ActionRecord & {type: "action"},
-                           resolvedBy: AiChatAuthorInfo, autoApproved: boolean): Promise<void> {
+                           resolvedBy: AiChatAuthorInfo, autoApproved: boolean)
+      : Promise<"approved" | "invalidated"> {
     let gatekeeper = this.getGatekeeperFacet(record.gatekeeperId);
     let result = await gatekeeper.applyAction(record.action);
     if (result?.outcome === "invalidated") {
@@ -2501,13 +2502,14 @@ class OverseerImpl implements AgentHooks {
       record.resolvedBy = resolvedBy;
       record.invalidationReason = result.reason;
       this.storage.actions.put(record);
-      return;
+      return "invalidated";
     }
     record.state = "approved";
     record.appliedAt = new Date();
     record.resolvedBy = resolvedBy;
     record.autoApproved = autoApproved;
     this.storage.actions.put(record);
+    return "approved";
   }
 
   // Apply all currently-eligible pending actions of the given gatekeeper, in ascending id order.
@@ -7598,7 +7600,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // Resolve the approver's identity before applying, so a failed profile fetch can't leave the
     // action applied in the world but still "pending" in storage.
     let profile = await this.#getClientProfile();
-    await this.impl.applyPendingAction(action, profile, false);
+    const outcome = await this.impl.applyPendingAction(action, profile, false);
+    if (outcome === "invalidated") return;
 
     // If this was an awaited agent action, resume only after all awaited actions in the turn are
     // approved. If applyPendingAction throws, the action stays pending and the turn stays suspended.
