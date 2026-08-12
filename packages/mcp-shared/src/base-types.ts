@@ -11,8 +11,8 @@
 export const MCP_BASE_TYPES = `// Base types for MCP-server sessions.
 //
 // These are prepended to every generated per-server \`.d.ts\` (see \`schema-to-ts.ts\`), so a workspace's
-// coding agent always has them in scope. One method per tool, plus \`callTool\` overloads, is
-// generated from the server's own tool catalog and appended below this file's contents.
+// coding agent always has them in scope. One method per tool and \`callTool\` overloads are generated
+// from the server's own tool catalog and appended below this file's contents.
 
 // A block of content returned by an MCP tool.
 export type McpContent =
@@ -22,7 +22,7 @@ export type McpContent =
   | { type: "resource_link"; uri: string; name?: string; description?: string; mimeType?: string }
   | { type: "resource"; resource: { uri: string; mimeType?: string; text?: string; blob?: string } };
 
-// Outcome of \`callTool\` or \`getActionResult\`.
+// Outcome of a tool call or \`getActionResult\`.
 //
 // Read-only tools resolve to \`"ok"\` straight away. Everything else is an action: it is queued for
 // approval and resolves to \`"pending"\`, then to \`"ok"\`, \`"rejected"\`, or \`"failed"\`.
@@ -65,7 +65,7 @@ export type McpToolMode =
 
 // Description of one tool exposed by the session.
 export type McpToolInfo = {
-  // Tool name, as passed to \`callTool\`. The generated method name is derived from it.
+  // Tool name, as passed to \`callTool\`.
   name: string;
   // Display title, if the server supplied one.
   title?: string;
@@ -77,7 +77,16 @@ export type McpToolInfo = {
   // \`readOnlyHint\` decided it, \`"default"\` when nothing was declared and it was treated as an
   // action. Recorded so an audit can find every call that was trusted on the server's word.
   classifiedBy: "server-annotation" | "default";
-  // JSON Schema for the tool's arguments, exactly as the server published it.
+  // JSON Schema for the tool's arguments when it fits the connector's definition budget.
   inputSchema?: unknown;
 };
+
+// Bounded search result. Title and description may be shortened; request the exact name through
+// \`listTools({ name })\` for the schema.
+export type McpToolSummary = Omit<McpToolInfo, "inputSchema">;
+
+// Progressive catalog lookup through the existing \`listTools\` session method.
+export type McpToolListOptions =
+  | { search: string; name?: never }
+  | { name: string; search?: never };
 `;

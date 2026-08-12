@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   actionKindFor,
   catalogRevision,
+  classifyAnnotations,
   classifyTool,
   describeCall,
   toolInfo,
@@ -15,6 +16,29 @@ describe("actionKindFor", () => {
   it("keeps binding and tool components unambiguous", () => {
     expect(actionKindFor("binding", "tool:admin").tag)
       .not.toBe(actionKindFor("binding:tool", "admin").tag);
+  });
+});
+
+describe("classifyAnnotations", () => {
+  it("decides exactly what classifyTool decides", () => {
+    // The split exists so a survey of a large endpoint, which carries annotations but no
+    // descriptions or schemas, can be classified without being dressed up as a tool definition. It
+    // is only safe while both answers are the same answer, so that is what this pins down.
+    const claims: (McpTool["annotations"] | undefined)[] = [
+      undefined,
+      {},
+      { readOnlyHint: true },
+      { readOnlyHint: false },
+      { destructiveHint: false, idempotentHint: true },
+      { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+    ];
+    for (const trust of ["vetted", "byo"] as const) {
+      for (const annotations of claims) {
+        const { tool: _ignored, ...full } = classifyTool(tool(annotations), trust);
+        expect(classifyAnnotations(annotations, trust)).toEqual(full);
+      }
+    }
   });
 });
 

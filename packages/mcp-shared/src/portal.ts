@@ -41,15 +41,37 @@ export function isPortalNativeTool(name: string): boolean {
 
 // True when this tool list came from a portal.
 //
-// A truncated catalog counts as a portal regardless of what is in it: `tools/list` is unordered, so
+// A truncated listing counts as a portal regardless of what is in it: `tools/list` is unordered, so
 // answering "not a portal" because the evidence fell past the cut would fail open on the `portal_*`
 // exclusion above -- a real portal would be granted at its bare endpoint, and a Gadget holding that
-// grant could call `portal_toggle_servers` to widen its own reach. `truncated` covers the byte
-// budget as well as the tool count, which stops the listing without leaving a short array behind.
+// grant could call `portal_toggle_servers` to widen its own reach.
+//
+// The explicit bounds form avoids guessing. `truncated` covers the byte budget, which stops a
+// listing without leaving a short array behind, and `cap` is the tool count the caller fetched with,
+// so that reaching it can be read as evidence of a cut here too. Callers fetch with several
+// different caps -- a scoped catalog and a wide index are not the same size -- and a cap guessed
+// wrong on the low side reports portals that are not, while one guessed high misses the cut that
+// the first paragraph exists to catch. The boolean overload preserves callers using the ordinary
+// catalog cap while portal-specific wide indexes migrate to explicit bounds.
 export function looksLikePortal(
-  tools: Pick<McpTool, "name">[], truncated = false,
+  tools: readonly Pick<McpTool, "name">[],
+): boolean;
+export function looksLikePortal(
+  tools: readonly Pick<McpTool, "name">[],
+  truncated: boolean,
+): boolean;
+export function looksLikePortal(
+  tools: readonly Pick<McpTool, "name">[],
+  bounds: { truncated: boolean; cap: number },
+): boolean;
+export function looksLikePortal(
+  tools: readonly Pick<McpTool, "name">[],
+  bounds: boolean | { truncated: boolean; cap: number } = false,
 ): boolean {
-  if (truncated || tools.length >= MAX_TOOLS_PER_SERVER) return true;
+  const normalized = typeof bounds === "boolean"
+    ? { truncated: bounds, cap: MAX_TOOLS_PER_SERVER }
+    : bounds;
+  if (normalized.truncated || tools.length >= normalized.cap) return true;
   return tools.some(tool => tool.name === PORTAL_LIST_SERVERS_TOOL);
 }
 

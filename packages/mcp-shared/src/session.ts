@@ -8,11 +8,29 @@ import { RpcTarget, type RpcStub } from "cloudflare:workers";
 import type { ActionDescription, ActionKind, ApprovalQueue }
   from "@gadgets/workshop-shared/gatekeeper";
 
-import type { McpClient } from "./client.js";
-import type { WithClientOptions } from "./connection.js";
+import {
+  MAX_TOOL_NAME_CHARS,
+  McpCallNotDispatchedError,
+  type McpClient,
+} from "./client.js";
+import type { McpConnection, WithClientOptions } from "./connection.js";
 import { isWholeEndpoint, type ToolScope } from "./scope.js";
-import { describeCall, toCallResult, toolInfo, type ClassifiedTool } from "./tools.js";
-import type { McpCallResult, McpToolInfo } from "./types";
+import { toolQueryTerms, MAX_QUERY_CHARS, MAX_SEARCH_RESULTS } from "./tool-search.js";
+import {
+  codeSpan,
+  describeCall,
+  plainInline,
+  toCallResult,
+  toolInfo,
+  toolSummary,
+  type ClassifiedTool,
+} from "./tools.js";
+import type {
+  McpCallResult,
+  McpToolInfo,
+  McpToolListOptions,
+  McpToolSummary,
+} from "./types";
 
 // A queued tool call, awaiting a decision. Persisted by the host in its own storage; the session
 // only ever reads one back by id.
@@ -25,6 +43,11 @@ export type StoredAction = {
   // second time; see `ActionStore.apply`.
   state: "pending" | "applying" | "applied" | "rejected" | "failed";
   submittedAt: number;
+  // Policy and account connection the user approved. Missing on actions staged by older code.
+  policyFingerprint?: string;
+  connectionGeneration?: number;
+  // Set immediately before `tools/call`; false means failures are known to precede dispatch.
+  dispatched?: boolean;
   // When the in-flight apply was claimed, for recovering a claim whose Durable Object died mid-call.
   claimedAt?: number;
   // Whether a `failed` record may be sent again. Absent means yes, which is the reading for records
@@ -46,16 +69,39 @@ export interface McpSessionHost {
   readonly scope: ToolScope;
 
   tools(): Promise<ClassifiedTool[]>;
+  searchTools(query: string): Promise<ClassifiedTool[]>;
+  findTool(name: string, refreshPolicy?: boolean): Promise<ClassifiedTool | undefined>;
+  resolveToolForCall(name: string): Promise<{
+    entry: ClassifiedTool;
+    policyFingerprint: string;
+    connectionGeneration: number;
+  } | undefined>;
 
   // Runs `fn` against an initialized client for this binding's endpoint.
-  call<T>(fn: (client: McpClient) => Promise<T>, options?: WithClientOptions): Promise<T>;
+  call<T>(
+    fn: (client: McpClient, connection: McpConnection) => Promise<T>,
+    options?: WithClientOptions,
+  ): Promise<T>;
 
   // The approval-kind tag for one tool, namespaced so pre-approvals cannot cross servers.
   actionKindFor(toolName: string): ActionKind;
 
-  stageAction(toolName: string, args: Record<string, unknown>): StoredAction;
+  stageAction(
+    toolName: string,
+    args: Record<string, unknown>,
+    snapshot: { policyFingerprint: string; connectionGeneration: number },
+  ): StoredAction;
   discardStagedAction(id: number): void;
   lookupAction(id: number): StoredAction | undefined;
+}
+
+function requireToolName(method: string, name: unknown): asserts name is string {
+  if (typeof name !== "string" || name.length === 0) {
+    throw new Error(`${method}() requires a tool name.`);
+  }
+  if (name.length > MAX_TOOL_NAME_CHARS) {
+    throw new Error(`${method}() tool name must be at most ${MAX_TOOL_NAME_CHARS} characters.`);
+  }
 }
 
 // The Gadget-facing session. A named method per tool is installed on a per-grant subclass (see
@@ -75,37 +121,80 @@ export class McpSessionBase extends RpcTarget {
     (this.#queue as RpcStub<ApprovalQueue> & { [Symbol.dispose](): void })[Symbol.dispose]();
   }
 
-  async listTools(): Promise<McpToolInfo[]> {
-    const tools = await this.#host.tools();
+  async listTools(
+    options?: McpToolListOptions,
+  ): Promise<McpToolInfo[] | McpToolSummary[]> {
+    if (options === undefined) {
+      const tools = await this.#host.tools();
+      await this.#queue.authorizeObservation({
+        title: `${this.#host.serverName}: list tools`,
+        description:
+          `Read the tool catalog of the MCP server **${this.#host.serverName}** ` +
+          `(\`${this.#host.endpoint}\`).`,
+      });
+      return tools.map(toolInfo);
+    }
+    if (typeof options !== "object" || options === null) {
+      throw new Error("listTools() options must select search or name.");
+    }
+    const hasName = Object.hasOwn(options, "name");
+    const hasSearch = Object.hasOwn(options, "search");
+    if (hasName === hasSearch) {
+      throw new Error("listTools() options must select exactly one of search or name.");
+    }
+    if (hasName) {
+      requireToolName("listTools", options.name);
+      const tool = await this.#host.findTool(options.name);
+      await this.#queue.authorizeObservation({
+        title: `${this.#host.serverName}: find tool`,
+        description:
+          `Looked for ${codeSpan(options.name, MAX_TOOL_NAME_CHARS)} on the MCP server ` +
+          `**${this.#host.serverName}** (\`${this.#host.endpoint}\`).`,
+      });
+      return tool ? [toolInfo(tool)] : [];
+    }
+    const trimmed = typeof options.search === "string" ? options.search.trim() : "";
+    if (trimmed.length === 0) {
+      throw new Error("listTools({ search }) requires a non-empty query.");
+    }
+    if (trimmed.length > MAX_QUERY_CHARS) {
+      throw new Error(`listTools({ search }) query must be at most ${MAX_QUERY_CHARS} characters.`);
+    }
+    if (toolQueryTerms(trimmed).length === 0) {
+      throw new Error("listTools({ search }) requires one or more search terms.");
+    }
+    const tools = await this.#host.searchTools(trimmed);
     await this.#queue.authorizeObservation({
-      title: `${this.#host.serverName}: list tools`,
+      title: `${this.#host.serverName}: search tools`,
       description:
-        `Read the tool catalog of the MCP server **${this.#host.serverName}** ` +
-        `(\`${this.#host.endpoint}\`).`,
+        `Searched the tool catalog of the MCP server **${this.#host.serverName}** ` +
+        // The query is the agent's text, so it is flattened before being quoted: an observation is
+        // read by a person, and a query is as able to forge structure as a tool description is.
+        `(\`${this.#host.endpoint}\`) for \`${plainInline(trimmed)}\` ` +
+        `and returned ${tools.length} match(es), up to a limit of ${MAX_SEARCH_RESULTS}.`,
     });
-    return tools.map(toolInfo);
+    return tools.map(toolSummary);
+  }
+
+  // Worded from the grant's point of view: on a scoped binding the tool may well exist on the server,
+  // and "no such tool" would send an agent looking for a typo it will not find.
+  #noSuchToolMessage(name: string): string {
+    return isWholeEndpoint(this.#host.scope)
+      ? `The MCP server "${this.#host.serverName}" has no tool named "${name}".`
+      : `This binding does not grant a tool named "${name}".`;
   }
 
   async callTool(name: string, args?: Record<string, unknown>): Promise<McpCallResult> {
-    if (typeof name !== "string" || name.length === 0) {
-      throw new Error("callTool() requires a tool name.");
-    }
+    requireToolName("callTool", name);
     const toolArgs = args ?? {};
     if (typeof toolArgs !== "object" || Array.isArray(toolArgs)) {
       throw new Error("callTool() arguments must be an object.");
     }
 
     const host = this.#host;
-    const tools = await host.tools();
-    const entry = tools.find(candidate => candidate.tool.name === name);
-    if (!entry) {
-      // Worded from the grant's point of view: on a scoped binding the tool may exist on the server,
-      // and "no such tool" would send an agent looking for a typo.
-      const available = tools.map(candidate => candidate.tool.name).join(", ");
-      throw new Error(isWholeEndpoint(host.scope)
-        ? `The MCP server "${host.serverName}" has no tool named "${name}". Available: ${available}`
-        : `This binding grants only these tools: ${available}.`);
-    }
+    const resolved = await host.resolveToolForCall(name);
+    if (!resolved) throw new Error(this.#noSuchToolMessage(name));
+    const { entry } = resolved;
 
     const described = describeCall({
       serverName: host.serverName,
@@ -117,13 +206,19 @@ export class McpSessionBase extends RpcTarget {
     });
 
     if (entry.mode === "read") {
-      const result = await host.call(client => client.callTool(name, toolArgs));
+      const result = await host.call((client, connection) => {
+        if (connection.generation !== resolved.connectionGeneration) {
+          throw new McpCallNotDispatchedError(
+            "This MCP connection changed while the tool was being resolved. Try again.");
+        }
+        return client.callTool(name, toolArgs);
+      });
       // Authorize before the data is handed back, per the gatekeeper contract.
       await this.#queue.authorizeObservation(described);
       return toCallResult(result);
     }
 
-    const staged = host.stageAction(name, toolArgs);
+    const staged = host.stageAction(name, toolArgs, resolved);
     const description: ActionDescription = {
       ...described,
       // MCP describes no inverse operation for a tool call.

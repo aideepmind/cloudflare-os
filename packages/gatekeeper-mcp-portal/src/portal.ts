@@ -509,9 +509,9 @@ export class McpGatekeeperImpl
       ? `${scope.tools.length} named MCP tool${scope.tools.length === 1 ? "" : "s"} on ` +
         `${label} \u2014 ${counts}. Other tools are refused.`
       : scope.serverId
-      ? `All ${tools.length} MCP tool${plural} of the ` +
-        `${this.ctx.props.scopeServerName ?? scope.serverId} server on ` +
-        `${this.ctx.props.serverName} \u2014 ${counts}. Other servers on it are refused.`
+      ? `All tools of the ${this.ctx.props.scopeServerName ?? scope.serverId} server on ` +
+        `${this.ctx.props.serverName}; ${tools.length} definition${plural} shown here ` +
+        `(${counts}). Other servers on it are refused.`
       : `All ${tools.length} MCP tool${plural} on ${label} \u2014 ${counts}.`;
 
     return {

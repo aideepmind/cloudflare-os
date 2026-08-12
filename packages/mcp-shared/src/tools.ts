@@ -2,8 +2,14 @@
 // Nothing outside this file reads a tool's `annotations`.
 
 import type { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
-import type { McpContentBlock, McpTool, McpToolCallResult } from "./client.js";
-import type { McpCallResult, McpToolInfo } from "./types";
+import {
+  clampToolSummary,
+  type McpContentBlock,
+  type McpTool,
+  type McpToolAnnotations,
+  type McpToolCallResult,
+} from "./client.js";
+import type { McpCallResult, McpToolInfo, McpToolSummary } from "./types";
 import { hexEncode } from "./util.js";
 
 // How far an endpoint's self-description is trusted.
@@ -32,9 +38,8 @@ export type ClassificationSource = "server-annotation" | "default";
 // Upper bound on tools taken from one endpoint, to keep generated types and catalogs bounded.
 export const MAX_TOOLS_PER_SERVER = 200;
 
-// A tool plus the decisions this gatekeeper has made about it.
-export type ClassifiedTool = {
-  tool: McpTool;
+// The decisions this gatekeeper has made about one tool, independent of the tool itself.
+export type ToolClassification = {
   // `read` runs immediately and is recorded as an observation; `action` goes to the queue.
   mode: "read" | "action";
   // Whether the deployment may let this action through without a prompt.
@@ -44,10 +49,15 @@ export type ClassifiedTool = {
   classifiedBy: ClassificationSource;
 };
 
+// A tool plus the decisions this gatekeeper has made about it.
+export type ClassifiedTool = ToolClassification & {
+  tool: McpTool;
+};
+
 // Whether the server declares this tool read-only. Strictly `=== true`, matching the spec's own
 // default of `false`, so an absent annotation is not a read.
-function isDeclaredReadOnly(tool: McpTool): boolean {
-  return tool.annotations?.readOnlyHint === true;
+function isDeclaredReadOnly(annotations: McpToolAnnotations | undefined): boolean {
+  return annotations?.readOnlyHint === true;
 }
 
 // The single place a server's self-description becomes a policy decision.
@@ -59,21 +69,30 @@ function isDeclaredReadOnly(tool: McpTool): boolean {
 //
 // Every test is `=== true` or `=== false` rather than a truthiness check, so an unannotated tool
 // fails all of them and comes out as an action that can never auto-apply.
-export function classifyTool(tool: McpTool, trust: ServerTrust): ClassifiedTool {
-  const annotations = tool.annotations ?? {};
-  const readOnly = isDeclaredReadOnly(tool);
+export function classifyAnnotations(
+  annotations: McpToolAnnotations | undefined,
+  trust: ServerTrust,
+): ToolClassification {
+  const claims = annotations ?? {};
+  const readOnly = isDeclaredReadOnly(annotations);
 
   const autoApprovable = !readOnly
     && trust === "vetted"
-    && annotations.destructiveHint === false
-    && annotations.idempotentHint === true;
+    && claims.destructiveHint === false
+    && claims.idempotentHint === true;
 
   return {
-    tool,
     mode: readOnly ? "read" : "action",
     autoApprovable,
     classifiedBy: readOnly ? "server-annotation" : "default",
   };
+}
+
+// Classifies a full tool definition. Annotations are the only input, so an `IndexedTool` can be
+// classified identically through `classifyAnnotations` -- but only a real definition can become a
+// `ClassifiedTool`, which is what gets rendered into approval prompts and generated types.
+export function classifyTool(tool: McpTool, trust: ServerTrust): ClassifiedTool {
+  return { tool, ...classifyAnnotations(tool.annotations, trust) };
 }
 
 // The tool as a Gadget sees it. `classifiedBy` is carried through so an audit can find every call
@@ -86,6 +105,18 @@ export function toolInfo(entry: ClassifiedTool): McpToolInfo {
     mode: entry.mode,
     classifiedBy: entry.classifiedBy,
     inputSchema: entry.tool.inputSchema,
+  };
+}
+
+/** The bounded, schema-free form returned by catalog search. */
+export function toolSummary(entry: ClassifiedTool): McpToolSummary {
+  const tool = clampToolSummary(entry.tool);
+  return {
+    name: tool.name,
+    title: tool.title,
+    description: tool.description,
+    mode: entry.mode,
+    classifiedBy: entry.classifiedBy,
   };
 }
 
@@ -104,10 +135,15 @@ function claimChar(value: boolean | undefined): string {
 // Every annotation that feeds a policy decision, in a fixed order.
 function policyClaims(tool: McpTool): string {
   return [
-    isDeclaredReadOnly(tool) ? "r" : "w",
+    isDeclaredReadOnly(tool.annotations) ? "r" : "w",
     claimChar(tool.annotations?.destructiveHint),
     claimChar(tool.annotations?.idempotentHint),
   ].join("");
+}
+
+/** Stable snapshot of every mutable input that controls one tool's dispatch policy. */
+export function toolPolicyFingerprint(tool: McpTool, trust: ServerTrust): string {
+  return `${trust}:${policyClaims(tool)}`;
 }
 
 // Stable fingerprint of a tool catalog, for detecting that an endpoint changed under us.
@@ -167,13 +203,12 @@ function quoteUntrusted(text: string, max: number): string {
   return clipped.split("\n").map(line => `> ${line}`).join("\n");
 }
 
-// Renders server-chosen text inside a Markdown code span.
-//
-// Tool names and endpoints are placed in backticks so the approver can see them exactly as sent, but
-// a name is as server-controlled as a description: one containing a backtick closes the span and
-// everything after it becomes prose the server wrote in the prompt's own voice. Backticks are
-// dropped and the text is flattened, so what is shown cannot be more than one inline span.
-function codeSpan(text: string, max = MAX_INLINE_TEXT): string {
+/**
+ * Renders server-chosen text inside a bounded Markdown code span.
+ *
+ * Backticks are dropped and whitespace is flattened so the value cannot escape into prompt prose.
+ */
+export function codeSpan(text: string, max = MAX_INLINE_TEXT): string {
   const cleaned = text.replace(/`/g, "").replace(/\s+/g, " ").trim();
   const clipped = cleaned.length > max ? `${cleaned.slice(0, max)}\u2026` : cleaned;
   return `\`${clipped || "(unnamed)"}\``;
@@ -182,10 +217,13 @@ function codeSpan(text: string, max = MAX_INLINE_TEXT): string {
 // Longest server-chosen name or endpoint shown inline in a prompt.
 const MAX_INLINE_TEXT = 120;
 
-// Renders server-chosen text as inline prose, with the characters that would let it forge structure
+// Renders untrusted text as inline prose, with the characters that would let it forge structure
 // removed. `account.ts` already does this to a server's reported name before storing it; this is the
 // same guard at the point of use, for the callers that pass a name from somewhere else.
-function plainInline(text: string, max = MAX_INLINE_TEXT): string {
+//
+// Exported for the observation records that quote text the agent chose, such as a search query,
+// which is untrusted for the same reason a server's tool name is.
+export function plainInline(text: string, max = MAX_INLINE_TEXT): string {
   const cleaned = text.replace(/[`*_[\]()#>|]/g, "").replace(/\s+/g, " ").trim();
   const clipped = cleaned.length > max ? `${cleaned.slice(0, max)}\u2026` : cleaned;
   return clipped || "(unnamed)";

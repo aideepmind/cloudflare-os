@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 
-import { ActionStore } from "../src/action-store.js";
-import { McpProtocolError, McpSessionExpiredError } from "../src/client.js";
+import { ActionInvalidatedError, ActionStore } from "../src/action-store.js";
+import { ACTION_INVALIDATED_ERROR_CODE } from "@gadgets/workshop-shared/gatekeeper";
+import {
+  McpProtocolError,
+  McpSessionExpiredError,
+} from "../src/client.js";
 
 type TestSql = ConstructorParameters<typeof ActionStore>[0];
 
@@ -12,7 +16,7 @@ function fakeSql(): TestSql {
     exec<T>(query: string, ...bindings: SQLInputValue[]) {
       const rows = bindings.length > 0
         ? db.prepare(query).all(...bindings)
-        : /^\s*(?:SELECT|INSERT.*RETURNING)/is.test(query)
+          : /^\s*(?:SELECT|INSERT.*RETURNING)/is.test(query)
           ? db.prepare(query).all()
           : (db.exec(query), []);
       return {
@@ -30,6 +34,54 @@ const log = { debug() {}, info() {}, warn() {}, error() {}, with() { return log;
 const ok = async () => ({ content: [{ type: "text" as const, text: "done" }] });
 
 describe("ActionStore", () => {
+  it("persists the approved policy and account generation", () => {
+    const store = new ActionStore(fakeSql());
+    const staged = store.stage("send", {}, {
+      policyFingerprint: "vetted:w01",
+      connectionGeneration: 7,
+    });
+
+    expect(store.get(staged.id)).toMatchObject({
+      policyFingerprint: "vetted:w01",
+      connectionGeneration: 7,
+    });
+  });
+
+  it("closes an action invalidated before dispatch without claiming it may have landed", async () => {
+    const store = new ActionStore(fakeSql());
+    const staged = store.stage("send", {});
+
+    const error = await store.apply(staged.id, async () => {
+      throw new ActionInvalidatedError("Policy changed. Stage the call again.");
+    }, log).catch(err => err);
+    expect(error).toMatchObject({
+      message: "Policy changed. Stage the call again.",
+      errorCode: ACTION_INVALIDATED_ERROR_CODE,
+    });
+
+    expect(store.get(staged.id)).toMatchObject({
+      state: "failed",
+      retryable: false,
+      error: "Policy changed. Stage the call again.",
+    });
+  });
+
+  it("keeps validation failures retryable when tools/call was never reached", async () => {
+    const store = new ActionStore(fakeSql());
+    const staged = store.stage("send", {});
+
+    await expect(store.apply(staged.id, async () => {
+      throw new McpProtocolError("validation failed");
+    }, log)).rejects.toThrow(/validation failed/);
+
+    expect(store.get(staged.id)).toMatchObject({
+      state: "failed",
+      retryable: true,
+      error: "validation failed",
+      dispatched: false,
+    });
+  });
+
   it("keeps a decided action available until the Gadget collects it", async () => {
     const store = new ActionStore(fakeSql());
     const staged = store.stage("send", { to: "a@b.c" });

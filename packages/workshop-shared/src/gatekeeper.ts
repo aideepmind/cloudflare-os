@@ -18,6 +18,9 @@
 
 import type { WorkerEntrypoint, DurableObject, RpcTarget, RpcStub } from "cloudflare:workers";
 
+/** RPC error code returned when an approved action became invalid before dispatch. */
+export const ACTION_INVALIDATED_ERROR_CODE = "GATEKEEPER_ACTION_INVALIDATED";
+
 /**
  * A pagination cursor.
  *

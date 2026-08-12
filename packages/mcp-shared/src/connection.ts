@@ -12,7 +12,9 @@ import {
   McpCallNotDispatchedError,
   McpClient,
   McpSessionExpiredError,
+  type McpToolFilter,
   type ToolCatalog,
+  type ToolIndex,
 }
   from "./client.js";
 import { fetchOptions, type InsecureEnv } from "./fetch.js";
@@ -27,6 +29,8 @@ export type ConnectionEnv = InsecureEnv & {
 export type WithClientOptions = {
   // False for a call that may have taken effect, so a dropped session is not retried. See above.
   retryOnExpiry?: boolean;
+  // Absolute deadline shared with time spent waiting for a discovery slot.
+  deadline?: number;
 };
 
 // Everything an account must hand over before a request can be made. One value rather than two
@@ -77,7 +81,7 @@ export async function withClient<T>(
   env: ConnectionEnv,
   account: ConnectionAccount,
   endpoint: string,
-  fn: (client: McpClient) => Promise<T>,
+  fn: (client: McpClient, connection: McpConnection) => Promise<T>,
   options: WithClientOptions = {},
 ): Promise<T> {
   // Read once for the whole operation. The account refreshes a token a minute before expiry, so one
@@ -95,7 +99,10 @@ export async function withClient<T>(
         await account.assertConnectionCurrent(endpoint, generation);
       }
       return authorization;
-    }, sessionId, fetchOptions(env));
+    }, sessionId, {
+      ...fetchOptions(env),
+      deadline: options.deadline,
+    });
   let persistedSessionId = sessionId;
 
   const persistSession = async (): Promise<void> => {
@@ -143,7 +150,7 @@ export async function withClient<T>(
       }
     }
     try {
-      return await fn(client);
+      return await fn(client, connection);
     } catch (err) {
       if (!(err instanceof McpSessionExpiredError)) throw err;
       if (options.retryOnExpiry !== false) {
@@ -154,7 +161,7 @@ export async function withClient<T>(
           if (initializeError instanceof McpAuthRequiredError) throw initializeError;
           throw notDispatched(initializeError);
         }
-        return await fn(client);
+        return await fn(client, connection);
       }
       // This call is not retried, since it may already have taken effect. The session is gone all
       // the same, so the cached id is dead: left in place it would fail every later call for a
@@ -176,8 +183,26 @@ export async function withClient<T>(
 // Lists an endpoint's tools, bounded by `MAX_TOOLS_PER_SERVER`. Reports whether a cap cut the
 // listing short, since callers infer what the endpoint is from what it does and does not offer.
 export async function fetchTools(
-  env: ConnectionEnv, account: ConnectionAccount, endpoint: string,
+  env: ConnectionEnv,
+  account: ConnectionAccount,
+  endpoint: string,
+  include?: McpToolFilter,
 ): Promise<ToolCatalog> {
   return withClient(env, account, endpoint,
-    client => client.listTools(MAX_TOOLS_PER_SERVER));
+    client => client.listTools(MAX_TOOLS_PER_SERVER, include));
+}
+
+/**
+ * Surveys an endpoint's tools without retaining schemas or descriptions, so `maxTools` can be far
+ * larger than a catalog's. Entries are not tool definitions; see `IndexedTool`.
+ */
+export async function fetchToolIndex(
+  env: ConnectionEnv,
+  account: ConnectionAccount,
+  endpoint: string,
+  maxTools: number,
+  include?: McpToolFilter,
+): Promise<ToolIndex> {
+  return withClient(env, account, endpoint,
+    client => client.listToolIndex(maxTools, include));
 }
