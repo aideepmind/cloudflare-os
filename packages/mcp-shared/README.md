@@ -113,6 +113,8 @@ Fixed rather than configurable.
 | Described or individually granted tools per server | 200 | `tools.ts` | Bounds the picker and generated `.d.ts`; a server-wide grant can discover additional tools later |
 | Catalog size | 96 KiB UTF-8 | `client.ts` | Leaves room below Durable Object's 128 KiB per-value limit for the cache wrapper and serialization overhead |
 | Filtered discovery scan | 5,000 tools / 4 MiB | `client.ts` | Bounds work spent skipping unrelated tools while searching a large endpoint |
+| Search query / results | 200 chars / 20 tools | `tool-search.ts` | Bounds agent-supplied matching work and the summaries returned to it |
+| Hydrated definitions per facet | 200 tools / 1 MiB | `catalog.ts` | Bounds definitions fetched individually beyond the described catalog |
 | Tool description | 4 KB | `client.ts` | As above, per tool, before it reaches storage |
 | Tool input schema | 20 KB | `client.ts` | Dropped rather than clipped; half a schema is not a schema |
 | `tools/list` pages | 50 | `client.ts` | A cursor that never ends would loop until the Worker is killed |

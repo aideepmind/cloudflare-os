@@ -192,7 +192,6 @@ export class HydratedTools {
   #load(
     name: string,
     load: (name: string) => Promise<McpTool | undefined>,
-    remember: boolean,
   ): Promise<McpTool | undefined> {
     const existing = this.#loads.get(name);
     if (existing) return existing;
@@ -201,7 +200,7 @@ export class HydratedTools {
     }
 
     const pending = load(name).then(loaded => {
-      if (remember) this.#remember(name, loaded ?? null);
+      this.#remember(name, loaded ?? null);
       return loaded;
     }).finally(() => {
       if (this.#loads.get(name) === pending) this.#loads.delete(name);
@@ -224,22 +223,6 @@ export class HydratedTools {
     if (!isValidToolName(name)) return undefined;
     const cached = this.#fresh(name);
     if (cached) return cached.tool ?? undefined;
-    return this.#load(name, load, true);
-  }
-
-  /** Coalesces a fresh policy lookup without retaining its result. */
-  refresh(
-    name: string,
-    load: (name: string) => Promise<McpTool | undefined>,
-  ): Promise<McpTool | undefined> {
-    if (!isValidToolName(name)) return Promise.resolve(undefined);
-    return this.#load(name, load, false);
-  }
-
-  /** Records definitions obtained some other way, such as a search that already fetched them. */
-  remember(tools: readonly McpTool[]): void {
-    for (const tool of tools) {
-      if (isValidToolName(tool.name)) this.#remember(tool.name, tool);
-    }
+    return this.#load(name, load);
   }
 }

@@ -39,22 +39,6 @@ describe("HydratedTools", () => {
     await expect(Promise.all([first, second])).resolves.toEqual([tool("a"), tool("a")]);
   });
 
-  it("coalesces policy refreshes without retaining their result", async () => {
-    let release!: (value: McpTool) => void;
-    const load = vi.fn(() => new Promise<McpTool>(resolve => { release = resolve; }));
-    const cache = new HydratedTools();
-
-    const first = cache.refresh("a", load);
-    const second = cache.refresh("a", load);
-    expect(load).toHaveBeenCalledTimes(1);
-    release(tool("a"));
-    await Promise.all([first, second]);
-
-    const reload = vi.fn(async (name: string) => tool(name));
-    await cache.refresh("a", reload);
-    expect(reload).toHaveBeenCalledTimes(1);
-  });
-
   it("remembers that a tool does not exist", async () => {
     // Without this, a Gadget naming a tool that is not there sends one full paginated listing to the
     // endpoint per call -- a cheap way to make this gatekeeper hammer a server on an agent's behalf.
@@ -94,13 +78,5 @@ describe("HydratedTools", () => {
     const reload = vi.fn(async (name: string) => large(name));
     await cache.resolve("large_0", reload);
     expect(reload).toHaveBeenCalledTimes(1);
-  });
-
-  it("accepts definitions fetched some other way", async () => {
-    const cache = new HydratedTools();
-    const load = vi.fn(async (name: string) => tool(name));
-    cache.remember([tool("searched")]);
-    await expect(cache.resolve("searched", load)).resolves.toEqual(tool("searched"));
-    expect(load).not.toHaveBeenCalled();
   });
 });
