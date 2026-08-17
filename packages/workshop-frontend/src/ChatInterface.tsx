@@ -3368,6 +3368,7 @@ export const ChatInput = ({
                 }
               }}
               onKeyDown={(e) => {
+                if (e.nativeEvent.isComposing || e.keyCode === 229) return;
                 if (slashCommandPicker.open && e.key === "Escape") {
                   e.preventDefault();
                   slashCommandPicker.dismiss();
@@ -6738,6 +6739,7 @@ function ChatInterface({
                             onChange={(e) => setRenamingInput(e.target.value)}
                             onClick={(e) => e.stopPropagation()}
                             onKeyDown={(e) => {
+                              if (e.nativeEvent.isComposing || e.keyCode === 229) return;
                               if (e.key === "Enter") {
                                 e.preventDefault();
                                 handleSaveListRename(chat.id);
@@ -6962,6 +6964,7 @@ function ChatInterface({
                         value={titleInput}
                         onChange={(e) => setTitleInput(e.target.value)}
                         onKeyDown={(e) => {
+                          if (e.nativeEvent.isComposing || e.keyCode === 229) return;
                           if (e.key === "Enter") handleSaveChatTitle();
                           if (e.key === "Escape") handleCancelTitleEdit();
                         }}
